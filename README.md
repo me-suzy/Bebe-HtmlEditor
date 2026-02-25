@@ -77,8 +77,14 @@ Modificările sunt sincronizate în ambele direcții:
 
 ## Capturi de ecran
 
-În acest folder sunt incluse 2 capturi de ecran ale aplicației (fișierele `.png` pe care le-ai salvat).
-Le poți păstra în repo pentru a ilustra modul de funcționare al editorului.
+În acest folder sunt incluse 2 capturi de ecran ale aplicației:
 
----
+- `Imagine 1 Open.png` – vedere generală cu panoul Cod + Design deschise.
+- `Imagine 2 inside.png` – exemplu de editare în panoul Design, cu panoul de proprietăți vizibil.
 
+În README sunt afișate astfel:
+
+```markdown
+![HTML Editor – panou Cod + Design](Imagine 1 Open.png)
+![HTML Editor – editare în Design](Imagine 2 inside.png)
+```
