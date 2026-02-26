@@ -1,5 +1,19 @@
-1. Copiaza convert-to-utf8.ps1 in folderul unde vrei sa faci coverirea html
+-----Metoda 1------
+
+1. Intra in folderul in care ai fisierul   "convert-to-utf8.ps1"
+
+e:\Carte\BB\17 - Site Leadership\alte\Ionel Balauta\Aryeht\Task 1 - Traduce tot site-ul\Doar Google Web\Andreea\Meditatii\2023\Convert HTML     UTF-8-BOM in UTF-8\
+
+2. Deschide CMD si ruleaza asta daca vrei sa convertesti fisierele din RO sau din EN
+
+powershell -ExecutionPolicy Bypass -File "convert-to-utf8.ps1" -Folder "e:\Carte\BB\17 - Site Leadership\Principal\ro"
+powershell -ExecutionPolicy Bypass -File "convert-to-utf8.ps1" -Folder "e:\Carte\BB\17 - Site Leadership\Principal\en"
+
+
+-----Metoda 2------
+1. (Optional) Copiaza convert-to-utf8.ps1 in folderul unde vrei sa faci coverirea html
 
 2. Deschide CMD in acel folder si scrie asta:
 
 powershell -ExecutionPolicy Bypass -NoExit -File "convert-to-utf8.ps1"
+
