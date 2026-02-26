@@ -19,6 +19,56 @@ function resolve_path($p, $ROOT)
     return rtrim($ROOT, '/') . '/' . ltrim($p, '/');
 }
 
+// Read a file and guarantee UTF-8 output (no BOM).
+// Handles: UTF-8 BOM, UTF-16 LE BOM, UTF-16 BE BOM, ISO-8859-1, Windows-1252.
+// Also updates the in-content charset declaration so the editor and saved file stay consistent.
+function read_file_as_utf8($path)
+{
+    $content = file_get_contents($path);
+    if ($content === false) return false;
+
+    // ── Detect and strip BOM signatures ──
+    if (substr($content, 0, 3) === "\xEF\xBB\xBF") {
+        // UTF-8 BOM: just strip the BOM, content is already UTF-8
+        return substr($content, 3);
+    }
+    if (substr($content, 0, 4) === "\xFF\xFE\x00\x00") {
+        // UTF-32 LE BOM
+        $content = mb_convert_encoding(substr($content, 4), 'UTF-8', 'UTF-32LE');
+        return preg_replace('/(\bcharset=)["\']?[a-zA-Z0-9_-]+["\']?/i', '${1}utf-8', $content, 1);
+    }
+    if (substr($content, 0, 4) === "\x00\x00\xFE\xFF") {
+        // UTF-32 BE BOM
+        $content = mb_convert_encoding(substr($content, 4), 'UTF-8', 'UTF-32BE');
+        return preg_replace('/(\bcharset=)["\']?[a-zA-Z0-9_-]+["\']?/i', '${1}utf-8', $content, 1);
+    }
+    if (substr($content, 0, 2) === "\xFF\xFE") {
+        // UTF-16 LE BOM
+        $content = mb_convert_encoding(substr($content, 2), 'UTF-8', 'UTF-16LE');
+        return preg_replace('/(\bcharset=)["\']?[a-zA-Z0-9_-]+["\']?/i', '${1}utf-8', $content, 1);
+    }
+    if (substr($content, 0, 2) === "\xFE\xFF") {
+        // UTF-16 BE BOM
+        $content = mb_convert_encoding(substr($content, 2), 'UTF-8', 'UTF-16BE');
+        return preg_replace('/(\bcharset=)["\']?[a-zA-Z0-9_-]+["\']?/i', '${1}utf-8', $content, 1);
+    }
+
+    // ── No BOM: check if already valid UTF-8 ──
+    if (mb_check_encoding($content, 'UTF-8')) return $content;
+
+    // ── Not UTF-8: detect charset from HTML meta tag and convert ──
+    $charset = 'ISO-8859-1'; // safe default
+    if (preg_match('/<meta\b[^>]*\bhttp-equiv=["\']?Content-Type["\']?[^>]*\bcharset=([a-zA-Z0-9_-]+)/i', $content, $m)) {
+        $charset = $m[1];
+    } elseif (preg_match('/<meta\b[^>]*\bcharset=["\']?([a-zA-Z0-9_-]+)/i', $content, $m)) {
+        $charset = $m[1];
+    }
+    $converted = @mb_convert_encoding($content, 'UTF-8', $charset);
+    if (!$converted) $converted = mb_convert_encoding($content, 'UTF-8', 'ISO-8859-1');
+    // Update charset declaration so saved file stays consistent
+    return preg_replace('/(\bcharset=)["\']?[a-zA-Z0-9_-]+["\']?/i', '${1}utf-8', $converted, 1);
+}
+
 // --- Asset proxy: serve any file from disk (CSS, JS, images, etc.) ---
 $pathInfo = isset($_SERVER['PATH_INFO']) ? $_SERVER['PATH_INFO'] : '';
 if (strpos($pathInfo, '/asset/') === 0) {
@@ -78,7 +128,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'preview') {
     } else {
         $dir = str_replace("\\", "/", dirname($full));
         $baseUrl = '/htmleditor/index.php/asset/' . $dir . '/';
-        $html = file_get_contents($full);
+        $html = read_file_as_utf8($full);
+        if ($html === false) { echo '<!DOCTYPE html><html><body>Eroare: nu se poate citi fisierul</body></html>'; exit; }
         $baseTag = '<base href="' . htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8') . '">';
 
         // ── STEP 1: Strip ALL JavaScript from the ENTIRE file first ──
@@ -123,8 +174,23 @@ if (isset($_GET['action']) && $_GET['action'] === 'preview') {
         }
 
         // ── STEP 3: Extract and sanitise body content ──
-        if (preg_match('/<body\b[^>]*>/i', $html, $bodyOpenM, PREG_OFFSET_CAPTURE)) {
-            $bodyTagEnd   = $bodyOpenM[0][1] + strlen($bodyOpenM[0][0]);
+        // Find the real <body> tag by splitting into comment/non-comment sections,
+        // so that a commented-out body tag (<!-- <body ...> -->) is never matched.
+        $bodyTagEnd = false;
+        $bodyOpenTag = '<body>';
+        $htmlParts = preg_split('/(<!--(?:(?!-->)[\s\S])*-->)/U', $html, -1, PREG_SPLIT_DELIM_CAPTURE);
+        $cumOffset = 0;
+        foreach ($htmlParts as $pi => $part) {
+            if ($pi % 2 === 0 && $bodyTagEnd === false) { // non-comment section
+                if (preg_match('/<body\b[^>]*>/i', $part, $bm, PREG_OFFSET_CAPTURE)) {
+                    $bodyTagEnd = $cumOffset + $bm[0][1] + strlen($bm[0][0]);
+                    // Strip on* from the real <body> opening tag
+                    $bodyOpenTag = preg_replace('/\s+on\w+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]*)/i', '', $bm[0][0]);
+                }
+            }
+            $cumOffset += strlen($part);
+        }
+        if ($bodyTagEnd !== false) {
             $bodyClosePos = strripos($html, '</body>');
             if ($bodyClosePos !== false && $bodyClosePos >= $bodyTagEnd) {
                 $bodyInner = substr($html, $bodyTagEnd, $bodyClosePos - $bodyTagEnd);
@@ -159,9 +225,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'preview') {
                     . "[class*=\"page-load\"], [id*=\"page-load\"] {\n"
                     . "  display: none !important; }\n"
                     . "</style>\n";
-
-                // Strip on* from the <body> opening tag itself
-                $bodyOpenTag = preg_replace('/\s+on\w+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]*)/i', '', $bodyOpenM[0][0]);
 
                 $html = "<!DOCTYPE html>\n<html>\n<head>\n"
                     . $metaTags . $titleTag . $baseTag . "\n" . $domReadyScript . "\n" . $allStyles . $editorOverrideCSS
@@ -329,8 +392,9 @@ if (isset($_GET['action'])) {
             echo json_encode(['ok' => false, 'error' => 'Fisierul nu exista: ' . $full]);
             exit;
         }
-        $txt = file_get_contents($full);
-        echo json_encode(['ok' => true, 'file' => $full, 'content' => $txt]);
+        $txt = read_file_as_utf8($full);
+        if ($txt === false) { echo json_encode(['ok' => false, 'error' => 'Nu se poate citi fisierul']); exit; }
+        echo json_encode(['ok' => true, 'file' => $full, 'content' => $txt], JSON_UNESCAPED_UNICODE);
         exit;
     }
 
@@ -1744,14 +1808,14 @@ if (isset($_GET['action'])) {
             editor.setSize('100%', '100%');
             // Diacritice românești în editorul de cod
             editor.addKeyMap({
-                'Ctrl-A':      cm => { cm.replaceSelection('ă'); },
-                'Ctrl-I':      cm => { cm.replaceSelection('î'); },
-                'Ctrl-T':      cm => { cm.replaceSelection('ṭ'); },
-                'Ctrl-S':      cm => { cm.replaceSelection('ṣ'); },
-                'Alt-S':       cm => { cm.replaceSelection('Ş'); },
-                'Alt-I':       cm => { cm.replaceSelection('Ȋ'); },
-                'Alt-A':       cm => { cm.replaceSelection('â'); },
-                'Alt-T':       cm => { cm.replaceSelection('Ţ'); },
+                'Ctrl-A':       cm => { cm.replaceSelection('ă'); },
+                'Ctrl-I':       cm => { cm.replaceSelection('î'); },
+                'Ctrl-S':       cm => { cm.replaceSelection('ṣ'); },
+                'Alt-T':        cm => { cm.replaceSelection('ṭ'); },
+                'Alt-Shift-T':  cm => { cm.replaceSelection('Ţ'); },
+                'Alt-S':        cm => { cm.replaceSelection('Ş'); },
+                'Alt-I':        cm => { cm.replaceSelection('Ȋ'); },
+                'Alt-A':        cm => { cm.replaceSelection('â'); },
             });
 
             // ── SASA code-side interception ──
@@ -2236,13 +2300,13 @@ if (isset($_GET['action'])) {
                 if (e.ctrlKey && !e.altKey && !e.metaKey) {
                     if (!e.shiftKey && e.key === 'a') _diac = 'ă';
                     else if (!e.shiftKey && e.key === 'i') _diac = 'î';
-                    else if (!e.shiftKey && e.key === 't') _diac = 'ṭ';
                     else if (!e.shiftKey && e.key === 's') _diac = 'ṣ';
-                } else if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-                    if      (e.key === 's') _diac = 'Ş';
-                    else if (e.key === 'i') _diac = 'Ȋ';
-                    else if (e.key === 'a') _diac = 'â';
-                    else if (e.key === 't') _diac = 'Ţ';
+                } else if (e.altKey && !e.ctrlKey && !e.metaKey) {
+                    if      (!e.shiftKey && e.key === 't') _diac = 'ṭ';
+                    else if (e.shiftKey  && e.key === 'T') _diac = 'Ţ';
+                    else if (!e.shiftKey && e.key === 's') _diac = 'Ş';
+                    else if (!e.shiftKey && e.key === 'i') _diac = 'Ȋ';
+                    else if (!e.shiftKey && e.key === 'a') _diac = 'â';
                 }
                 if (_diac) {
                     e.preventDefault();
