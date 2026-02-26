@@ -1,0 +1,5 @@
+1. Copiaza convert-to-utf8.ps1 in folderul unde vrei sa faci coverirea html
+
+2. Deschide CMD in acel folder si scrie asta:
+
+powershell -ExecutionPolicy Bypass -NoExit -File "convert-to-utf8.ps1"
