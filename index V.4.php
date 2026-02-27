@@ -1591,6 +1591,7 @@ if (isset($_GET['action'])) {
 
         function switchToTab(tabId) {
             if (tabId === activeTabId) return;
+            if (typeof flushPendingDesignSync === 'function') flushPendingDesignSync();
             saveCurrentTabState();
             activeTabId = tabId;
             var tab = null;
@@ -1745,16 +1746,24 @@ if (isset($_GET['action'])) {
                         originalContent: b.originalContent,
                         viewMode: b.viewMode
                     });
-                    tab.isDirty = true;
+                    // Only mark dirty if content actually differs from original
+                    var isActuallyDirty = (normalizeHtmlForCompare((b.editorContent || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')) !== tab.originalContentNorm);
+                    tab.isDirty = isActuallyDirty;
                     tabs.push(tab);
                     restored++;
                 }
                 if (restored > 0) {
+                    // Remove tabs that turned out to be clean (content matches original)
+                    var actuallyDirty = tabs.filter(function (t) { return t.isDirty; }).length;
                     activeTabId = tabs[0].id;
                     restoreTabState(tabs[0]);
                     renderTabs();
                     hideOverlay();
-                    toast(restored + ' tab' + (restored > 1 ? '-uri nesalvate restaurate' : ' nesalvat restaurat') + ' din backup');
+                    if (actuallyDirty > 0) {
+                        toast(actuallyDirty + ' tab' + (actuallyDirty > 1 ? '-uri nesalvate restaurate' : ' nesalvat restaurat') + ' din backup');
+                    }
+                    // Clean up backup for tabs that are no longer dirty
+                    backupDirtyTabs();
                 }
             } catch (e) { }
         }
@@ -2953,9 +2962,17 @@ if (isset($_GET['action'])) {
             // Block text drag-and-drop in design panel (prevents accidental moves)
             doc.addEventListener('dragstart', function (e) { e.preventDefault(); });
             doc.addEventListener('drop', function (e) { e.preventDefault(); });
-            // Initialize the custom undo/redo stack for this freshly-loaded page.
-            // The 500ms periodic timer inside captures typing snapshots automatically.
-            designResetUndoStack();
+
+            // If the code editor has unsaved changes that differ from the physical file we just
+            // loaded into the iframe (e.g., restoring a dirty tab on refresh), apply them now!
+            // This prevents losing edits when reopening a dirty tab or rebuilding the preview.
+            if (isDirty) {
+                applyCodeToDesignPanel();
+            } else {
+                // Initialize the custom undo/redo stack for this freshly-loaded clean page.
+                designResetUndoStack();
+            }
+
             // Chromium on Windows can fire a spurious 'input' event immediately after
             // a clipboard copy (Ctrl+C) on contentEditable elements, even though no
             // content was actually modified. Suppress any 'input' that arrives within
@@ -4452,6 +4469,7 @@ if (isset($_GET['action'])) {
         }
 
         window.addEventListener('beforeunload', function (e) {
+            if (typeof flushPendingDesignSync === 'function') flushPendingDesignSync();
             saveCurrentTabState();
             var hasUnsaved = tabs.some(function (t) { return t.isDirty; }) || isDirty;
             if (hasUnsaved) {
@@ -4478,6 +4496,9 @@ if (isset($_GET['action'])) {
                 } catch (ex) { }
                 e.preventDefault();
                 e.returnValue = '';
+            } else {
+                // No dirty tabs — remove any stale backup from localStorage
+                try { localStorage.removeItem('htmlEditorBackupTabs'); } catch (ex) { }
             }
         });
 
