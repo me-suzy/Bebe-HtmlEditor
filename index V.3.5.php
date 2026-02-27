@@ -25,8 +25,7 @@ function resolve_path($p, $ROOT)
 function read_file_as_utf8($path)
 {
     $content = file_get_contents($path);
-    if ($content === false)
-        return false;
+    if ($content === false) return false;
 
     // ── Detect and strip BOM signatures ──
     if (substr($content, 0, 3) === "\xEF\xBB\xBF") {
@@ -55,8 +54,7 @@ function read_file_as_utf8($path)
     }
 
     // ── No BOM: check if already valid UTF-8 ──
-    if (mb_check_encoding($content, 'UTF-8'))
-        return $content;
+    if (mb_check_encoding($content, 'UTF-8')) return $content;
 
     // ── Not UTF-8: detect charset from HTML meta tag and convert ──
     $charset = 'ISO-8859-1'; // safe default
@@ -66,8 +64,7 @@ function read_file_as_utf8($path)
         $charset = $m[1];
     }
     $converted = @mb_convert_encoding($content, 'UTF-8', $charset);
-    if (!$converted)
-        $converted = mb_convert_encoding($content, 'UTF-8', 'ISO-8859-1');
+    if (!$converted) $converted = mb_convert_encoding($content, 'UTF-8', 'ISO-8859-1');
     // Update charset declaration so saved file stays consistent
     return preg_replace('/(\bcharset=)["\']?[a-zA-Z0-9_-]+["\']?/i', '${1}utf-8', $converted, 1);
 }
@@ -132,10 +129,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'preview') {
         $dir = str_replace("\\", "/", dirname($full));
         $baseUrl = '/htmleditor/index.php/asset/' . $dir . '/';
         $html = read_file_as_utf8($full);
-        if ($html === false) {
-            echo '<!DOCTYPE html><html><body>Eroare: nu se poate citi fisierul</body></html>';
-            exit;
-        }
+        if ($html === false) { echo '<!DOCTYPE html><html><body>Eroare: nu se poate citi fisierul</body></html>'; exit; }
         $baseTag = '<base href="' . htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8') . '">';
 
         // ── STEP 1: Strip ALL JavaScript from the ENTIRE file first ──
@@ -153,7 +147,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'preview') {
         // strip title attr (titled stylesheets are "preferred" and may not activate in blob context)
         preg_match_all('/<link\b[^>]*\brel=["\']?stylesheet["\']?[^>]*\/?>/i', $html, $linkM);
         if (!empty($linkM[0])) {
-            $cleanLinks = array_map(function ($tag) {
+            $cleanLinks = array_map(function($tag) {
                 $tag = preg_replace('/\s+on\w+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]*)/i', '', $tag);
                 $tag = preg_replace('/\bmedia\s*=\s*["\']?\s*print\s*["\']?/i', 'media="all"', $tag);
                 $tag = preg_replace('/\s+title\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]*)/i', '', $tag);
@@ -165,15 +159,13 @@ if (isset($_GET['action']) && $_GET['action'] === 'preview') {
         // <style> blocks from the entire page, re-packaged cleanly in <head>
         preg_match_all('/<style\b[^>]*>([\s\S]*?)<\/style>/i', $html, $styleM);
         foreach ($styleM[1] as $css) {
-            if (trim($css))
-                $allStyles .= "<style type=\"text/css\">\n" . $css . "\n</style>\n";
+            if (trim($css)) $allStyles .= "<style type=\"text/css\">\n" . $css . "\n</style>\n";
         }
 
         // <meta charset> and <meta viewport>
         $metaTags = '';
         preg_match_all('/<meta\b(?=[^>]*(?:charset|viewport))[^>]*>/i', $html, $metaM);
-        if (!empty($metaM[0]))
-            $metaTags = implode("\n", $metaM[0]) . "\n";
+        if (!empty($metaM[0])) $metaTags = implode("\n", $metaM[0]) . "\n";
 
         // <title>
         $titleTag = '';
@@ -300,10 +292,8 @@ if (isset($_GET['action'])) {
         @exec($cmd, $output);
         foreach ($output as $line) {
             $line = trim($line);
-            if ($line)
-                $results[] = str_replace("\\", "/", $line);
-            if (count($results) >= 5)
-                break;
+            if ($line) $results[] = str_replace("\\", "/", $line);
+            if (count($results) >= 5) break;
         }
         // Fallback: PHP scandir recursiv (daca exec nu a mers)
         if (empty($results)) {
@@ -314,16 +304,13 @@ if (isset($_GET['action'])) {
                 $nextStack = [];
                 foreach ($stack as $dir) {
                     $items = @scandir($dir);
-                    if (!$items)
-                        continue;
+                    if (!$items) continue;
                     foreach ($items as $item) {
-                        if ($item === '.' || $item === '..')
-                            continue;
+                        if ($item === '.' || $item === '..') continue;
                         $path = $dir . '/' . $item;
                         if (is_file($path) && strcasecmp($item, $name) === 0) {
                             $results[] = str_replace("\\", "/", $path);
-                            if (count($results) >= 5)
-                                break 3;
+                            if (count($results) >= 5) break 3;
                         } elseif (is_dir($path)) {
                             $nextStack[] = $path;
                         }
@@ -331,8 +318,7 @@ if (isset($_GET['action'])) {
                 }
                 $stack = $nextStack;
                 $depth++;
-                if ($depth > 8)
-                    break;
+                if ($depth > 8) break;
             }
         }
         // Also check in extra directories (from recent files, outside $ROOT).
@@ -367,16 +353,13 @@ if (isset($_GET['action'])) {
                 $ancestor = $dir;
                 for ($i = 0; $i < 2; $i++) {
                     $parent = dirname($ancestor);
-                    if ($parent === $ancestor || $parent === '.' || strlen($parent) <= 3)
-                        break;
+                    if ($parent === $ancestor || $parent === '.' || strlen($parent) <= 3) break;
                     $ancestor = $parent;
                 }
                 $ancestor = str_replace("\\", "/", $ancestor);
                 // Skip if it's under $ROOT (already searched) or is a drive root
-                if (stripos($ancestor, $rootNorm) === 0)
-                    continue;
-                if (strlen($ancestor) <= 3)
-                    continue; // e.g. "D:/"
+                if (stripos($ancestor, $rootNorm) === 0) continue;
+                if (strlen($ancestor) <= 3) continue; // e.g. "D:/"
                 $searchRoots[$ancestor] = true;
             }
             foreach (array_keys($searchRoots) as $sr) {
@@ -386,18 +369,15 @@ if (isset($_GET['action'])) {
                 @exec($cmd, $lines);
                 foreach ($lines as $line) {
                     $line = trim($line);
-                    if (!$line)
-                        continue;
+                    if (!$line) continue;
                     $norm = str_replace("\\", "/", $line);
                     if (!isset($existing[$norm])) {
                         $results[] = $norm;
                         $existing[$norm] = true;
                     }
-                    if (count($results) >= 20)
-                        break;
+                    if (count($results) >= 20) break;
                 }
-                if (count($results) >= 20)
-                    break;
+                if (count($results) >= 20) break;
             }
         }
         echo json_encode(['ok' => true, 'results' => $results]);
@@ -413,10 +393,7 @@ if (isset($_GET['action'])) {
             exit;
         }
         $txt = read_file_as_utf8($full);
-        if ($txt === false) {
-            echo json_encode(['ok' => false, 'error' => 'Nu se poate citi fisierul']);
-            exit;
-        }
+        if ($txt === false) { echo json_encode(['ok' => false, 'error' => 'Nu se poate citi fisierul']); exit; }
         echo json_encode(['ok' => true, 'file' => $full, 'content' => $txt], JSON_UNESCAPED_UNICODE);
         exit;
     }
@@ -490,110 +467,13 @@ if (isset($_GET['action'])) {
             font-size: 18px
         }
 
-        /* ---- Tab Bar ---- */
-        #tabBar {
-            display: flex;
-            align-items: center;
-            gap: 2px;
-            flex: 1;
-            min-width: 0;
-            overflow-x: auto;
-            overflow-y: hidden;
-            scrollbar-width: thin;
-            padding: 2px 0;
-        }
-
-        #tabBar::-webkit-scrollbar {
-            height: 4px
-        }
-
-        #tabBar::-webkit-scrollbar-thumb {
-            background: #4b5563;
-            border-radius: 2px
-        }
-
-        .editor-tab {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 5px 10px;
-            background: #1e1f26;
+        #tabFile {
+            font-size: 14px;
             color: #9ca3af;
-            border-radius: 6px 6px 0 0;
-            border: 1px solid #333;
-            border-bottom: none;
-            font-size: 13px;
-            cursor: pointer;
-            white-space: nowrap;
-            max-width: 180px;
-            min-width: 60px;
-            user-select: none;
-            flex-shrink: 0;
-            transition: background .15s, color .15s;
-        }
-
-        .editor-tab:hover {
-            background: #2b2c3a;
-            color: #e5e7eb
-        }
-
-        .editor-tab.active {
-            background: #252633;
-            color: #fff;
-            border-color: #3b82f6;
-            border-bottom: 1px solid #252633;
-            font-weight: 600;
-        }
-
-        .editor-tab.dirty .tab-label::after {
-            content: ' \2731';
-            color: #facc15;
-            font-size: 13px;
-            vertical-align: middle;
-            margin-left: 1px
-        }
-
-        .editor-tab.drag-over {
-            border-left: 3px solid #3b82f6
-        }
-
-        .editor-tab.dragging {
-            opacity: 0.4
-        }
-
-        .tab-label {
+            max-width: 420px;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 140px
-        }
-
-        .tab-close {
-            font-size: 16px;
-            line-height: 1;
-            color: #6b7280;
-            border-radius: 3px;
-            padding: 0 3px;
-            margin-left: 2px;
-        }
-
-        .tab-close:hover {
-            background: #ef4444;
-            color: #fff
-        }
-
-        .tab-new {
-            font-size: 18px;
-            font-weight: 700;
-            color: #6b7280;
-            padding: 5px 12px;
-            border: 1px dashed #4b5563;
-            background: transparent;
-            min-width: auto;
-        }
-
-        .tab-new:hover {
-            color: #3b82f6;
-            border-color: #3b82f6
+            white-space: nowrap
         }
 
         .btn {
@@ -928,16 +808,12 @@ if (isset($_GET['action'])) {
             border-radius: 8px;
             padding: 16px 20px;
             z-index: 3000;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, .5);
+            box-shadow: 0 8px 32px rgba(0,0,0,.5);
             min-width: 420px;
             display: none;
             font-size: 14px;
         }
-
-        .find-replace-dialog.visible {
-            display: block;
-        }
-
+        .find-replace-dialog.visible { display: block; }
         .find-replace-dialog h4 {
             margin: 0 0 12px 0;
             color: #e5e7eb;
@@ -946,102 +822,48 @@ if (isset($_GET['action'])) {
             justify-content: space-between;
             align-items: center;
         }
-
         .find-replace-dialog .fr-close {
-            background: none;
-            border: none;
-            color: #9ca3af;
-            font-size: 20px;
-            cursor: pointer;
-            padding: 0 4px;
-            line-height: 1;
+            background: none; border: none; color: #9ca3af; font-size: 20px;
+            cursor: pointer; padding: 0 4px; line-height: 1;
         }
-
-        .find-replace-dialog .fr-close:hover {
-            color: #fff;
-        }
-
+        .find-replace-dialog .fr-close:hover { color: #fff; }
         .find-replace-dialog .fr-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 10px;
+            display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
         }
-
         .find-replace-dialog .fr-row label {
-            color: #9ca3af;
-            min-width: 70px;
-            text-align: right;
+            color: #9ca3af; min-width: 70px; text-align: right;
         }
-
         .find-replace-dialog .fr-row input[type="text"] {
-            flex: 1;
-            background: #15161d;
-            border: 1px solid #444;
-            border-radius: 4px;
-            padding: 6px 10px;
-            color: #eee;
-            font-size: 14px;
+            flex: 1; background: #15161d; border: 1px solid #444;
+            border-radius: 4px; padding: 6px 10px; color: #eee; font-size: 14px;
         }
-
         .find-replace-dialog .fr-row input[type="text"]:focus {
-            outline: none;
-            border-color: #3b82f6;
+            outline: none; border-color: #3b82f6;
         }
-
         .find-replace-dialog .fr-btns {
-            display: flex;
-            gap: 8px;
-            margin-top: 12px;
-            justify-content: flex-end;
+            display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end;
         }
-
         .find-replace-dialog .fr-btns button {
-            padding: 6px 14px;
-            border: none;
-            border-radius: 4px;
-            font-size: 13px;
-            cursor: pointer;
+            padding: 6px 14px; border: none; border-radius: 4px;
+            font-size: 13px; cursor: pointer;
         }
-
         .find-replace-dialog .fr-btn-primary {
-            background: #3b82f6;
-            color: #fff;
+            background: #3b82f6; color: #fff;
         }
-
-        .find-replace-dialog .fr-btn-primary:hover {
-            background: #2563eb;
-        }
-
+        .find-replace-dialog .fr-btn-primary:hover { background: #2563eb; }
         .find-replace-dialog .fr-btn-ghost {
-            background: #2b2c3a;
-            color: #ccc;
+            background: #2b2c3a; color: #ccc;
         }
-
-        .find-replace-dialog .fr-btn-ghost:hover {
-            background: #3b3d4d;
-        }
-
+        .find-replace-dialog .fr-btn-ghost:hover { background: #3b3d4d; }
         .find-replace-dialog .fr-options {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            margin-bottom: 10px;
+            display: flex; align-items: center; gap: 14px; margin-bottom: 10px;
         }
-
         .find-replace-dialog .fr-options label {
-            color: #9ca3af;
-            font-size: 13px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 4px;
+            color: #9ca3af; font-size: 13px; cursor: pointer;
+            display: flex; align-items: center; gap: 4px;
         }
-
         .find-replace-dialog .fr-info {
-            color: #9ca3af;
-            font-size: 13px;
-            margin-top: 8px;
+            color: #9ca3af; font-size: 13px; margin-top: 8px;
         }
 
         /* Overlay start dialog */
@@ -1198,32 +1020,16 @@ if (isset($_GET['action'])) {
 </head>
 
 <body>
-    <!-- Save Confirm Dialog -->
-    <div id="saveConfirmOverlay"
-        style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;align-items:center;justify-content:center">
-        <div
-            style="background:#252633;border:1px solid #3b82f6;border-radius:10px;padding:24px 30px;max-width:420px;color:#eaeaea;font-size:15px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.5)">
-            <div id="saveConfirmMsg" style="margin-bottom:20px;line-height:1.5"></div>
-            <div style="display:flex;gap:10px;justify-content:center">
-                <button onclick="_saveConfirmResolve('save')"
-                    style="padding:8px 20px;background:#3b82f6;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:14px">Salveaza</button>
-                <button onclick="_saveConfirmResolve('no')"
-                    style="padding:8px 20px;background:#ef4444;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:14px">Nu</button>
-            </div>
-        </div>
-    </div>
     <!-- Find & Replace Dialog -->
-    <div class="find-replace-dialog" id="findReplaceDialog" onkeydown="if(event.key==='Escape') closeFindReplace();">
+    <div class="find-replace-dialog" id="findReplaceDialog">
         <h4>Find & Replace <button class="fr-close" onclick="closeFindReplace()" title="Close">&times;</button></h4>
         <div class="fr-row">
             <label>Find:</label>
-            <input type="text" id="frFindInput" placeholder="Search text..."
-                onkeydown="if(event.key==='Escape'){closeFindReplace();} else if(event.key==='Enter'){event.preventDefault();findNext();}">
+            <input type="text" id="frFindInput" placeholder="Search text..." onkeydown="if(event.key==='Enter'){event.preventDefault();findNext();}">
         </div>
         <div class="fr-row">
             <label>Replace:</label>
-            <input type="text" id="frReplaceInput" placeholder="Replace with..."
-                onkeydown="if(event.key==='Escape'){closeFindReplace();} else if(event.key==='Enter'){event.preventDefault();replaceCurrent();}">
+            <input type="text" id="frReplaceInput" placeholder="Replace with..." onkeydown="if(event.key==='Enter'){event.preventDefault();replaceCurrent();}">
         </div>
         <div class="fr-options">
             <label><input type="checkbox" id="frCaseSensitive"> Case sensitive</label>
@@ -1266,14 +1072,11 @@ if (isset($_GET['action'])) {
         </div>
     </div>
     <div class="topbar">
-        <button class="btn btn-ghost" id="btnToggleSidebar" onclick="toggleSidebar()"
-            title="Arata/Ascunde lista de fisiere (fisiere HTML)">☰</button>
+        <button class="btn btn-ghost" id="btnToggleSidebar" onclick="toggleSidebar()" title="Arata/Ascunde lista de fisiere (fisiere HTML)">☰</button>
         <div class="brand">Mini Dreamweaver</div>
-        <div id="tabBar">
-            <div class="editor-tab tab-new" id="tabNew" onclick="onNewTabClick()" title="Deschide fisier nou">+</div>
-        </div>
+        <div id="tabFile">Niciun fisier deschis</div>
         <div style="flex:1"></div>
-        <button class="btn btn-ghost" onclick="closeActiveTab()">Inchide tab</button>
+        <button class="btn btn-ghost" onclick="closeEditor()">Inchide</button>
         <button class="btn btn-primary" onclick="saveFile()">Salveaza (Ctrl+S)</button>
     </div>
     <div class="main">
@@ -1299,12 +1102,9 @@ if (isset($_GET['action'])) {
                         Redo</button>
                 </div>
                 <div class="viewmode-tabs" style="margin-left:20px">
-                    <button type="button" id="btnSelectSasa" onclick="selectSasaRegion()"
-                        title="Select between SASA-1 and SASA-2">Select</button>
-                    <button type="button" id="btnCropSasa" onclick="cropSasaRegion()"
-                        title="Highlight paragraphs between SASA-1 and SASA-2 (visual only)">Crop</button>
-                    <button type="button" id="btnFind" onclick="toggleFindReplace()"
-                        title="Find & Replace (Ctrl+H)">Find</button>
+                    <button type="button" id="btnSelectSasa" onclick="selectSasaRegion()" title="Select between SASA-1 and SASA-2">Select</button>
+                    <button type="button" id="btnCropSasa" onclick="cropSasaRegion()" title="Highlight paragraphs between SASA-1 and SASA-2 (visual only)">Crop</button>
+                    <button type="button" id="btnFind" onclick="toggleFindReplace()" title="Find & Replace (Ctrl+H)">Find</button>
                 </div>
                 <div class="tabs">
                     <div class="status" id="status">Pregatit</div>
@@ -1391,369 +1191,6 @@ if (isset($_GET['action'])) {
         let lastDesignSnapshot = null;
         let designSnapshotTimer = null;
 
-        // ===== MULTI-TAB SYSTEM =====
-        let tabs = [];
-        let activeTabId = null;
-        let tabIdCounter = 0;
-        let _isRestoringTab = false;
-
-        function createTabState(opts) {
-            opts = opts || {};
-            tabIdCounter++;
-            var _oc = (opts.originalContent || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-            return {
-                id: tabIdCounter,
-                filePath: opts.filePath || null,
-                fileName: opts.fileName || '',
-                tabLabel: opts.tabLabel || 'Nou',
-                fullTitle: opts.fullTitle || '',
-                editorContent: opts.editorContent || '',
-                originalContent: _oc,
-                originalContentNorm: normalizeHtmlForCompare(_oc),
-                cursorPos: opts.cursorPos || { line: 0, ch: 0 },
-                scrollInfo: opts.scrollInfo || { left: 0, top: 0 },
-                undoHistory: opts.undoHistory || null,
-                isDirty: false,
-                viewMode: opts.viewMode || 'split',
-                lastPreviewHadBody: opts.lastPreviewHadBody || false,
-                designUndoStack: [],
-                designRedoStack: [],
-                lastDesignSnapshot: null
-            };
-        }
-
-        function escapeHtml(str) {
-            var d = document.createElement('div');
-            d.textContent = str;
-            return d.innerHTML;
-        }
-
-        // Normalize HTML for dirty comparison. Browsers serialize innerHTML
-        // slightly differently from the original source (e.g. <br/> → <br>,
-        // <img .../> → <img ...>). This function normalizes those differences
-        // so that undo-back-to-original correctly detects "not dirty".
-        function normalizeHtmlForCompare(html) {
-            return html
-                // Self-closing void elements: <br/> → <br>, <img .../> → <img ...>
-                .replace(/<(br|hr|img|input|meta|link|col|area|source|track|wbr|embed|param)((?:\s[^>]*?)?)(?:\s*\/)>/gi, '<$1$2>')
-                // Trim trailing whitespace before > in void elements
-                .replace(/<(br|hr|img|input|meta|link|col|area|source|track|wbr|embed|param)((?:\s[^>]*?)?)\s+>/gi, '<$1$2>');
-        }
-
-        function getTabFullTitle(content, fileName) {
-            var m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(content);
-            if (m && m[1].trim()) return m[1].trim().replace(/\s+/g, ' ');
-            if (fileName) return fileName.replace(/^.*[\\\/]/, '');
-            return 'Nou';
-        }
-
-        function getTabLabel(content, fileName) {
-            var full = getTabFullTitle(content, fileName);
-            var words = full.split(' ');
-            var label = words.slice(0, 2).join(' ');
-            if (label.length > 18) label = label.substring(0, 17) + '\u2026';
-            return label || 'Nou';
-        }
-
-        function findTabByPath(path) {
-            if (!path) return null;
-            for (var i = 0; i < tabs.length; i++) {
-                if (tabs[i].filePath === path) return tabs[i];
-            }
-            return null;
-        }
-
-        var _dragTabId = null;
-
-        function renderTabs() {
-            var bar = document.getElementById('tabBar');
-            if (!bar) return;
-            var existing = bar.querySelectorAll('.editor-tab:not(.tab-new)');
-            for (var i = 0; i < existing.length; i++) existing[i].remove();
-            var newBtn = document.getElementById('tabNew');
-            tabs.forEach(function (tab) {
-                var div = document.createElement('div');
-                div.className = 'editor-tab' + (tab.id === activeTabId ? ' active' : '') + (tab.isDirty ? ' dirty' : '');
-                div.dataset.tabId = tab.id;
-                div.title = tab.fullTitle || tab.tabLabel;
-                div.draggable = true;
-                div.innerHTML = '<span class="tab-label">' + escapeHtml(tab.tabLabel) + '</span>'
-                    + '<span class="tab-close" title="Inchide tab">&times;</span>';
-                (function (tid) {
-                    div.addEventListener('click', function (e) {
-                        if (e.target.classList.contains('tab-close')) return;
-                        switchToTab(tid);
-                    });
-                    div.querySelector('.tab-close').addEventListener('click', function (e) {
-                        e.stopPropagation();
-                        closeTab(tid);
-                    });
-                    // Drag & drop reordering
-                    div.addEventListener('dragstart', function (e) {
-                        _dragTabId = tid;
-                        div.classList.add('dragging');
-                        e.dataTransfer.effectAllowed = 'move';
-                    });
-                    div.addEventListener('dragend', function () {
-                        _dragTabId = null;
-                        div.classList.remove('dragging');
-                        bar.querySelectorAll('.editor-tab').forEach(function (el) { el.classList.remove('drag-over'); });
-                    });
-                    div.addEventListener('dragover', function (e) {
-                        if (_dragTabId === null || _dragTabId === tid) return;
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = 'move';
-                        bar.querySelectorAll('.editor-tab').forEach(function (el) { el.classList.remove('drag-over'); });
-                        div.classList.add('drag-over');
-                    });
-                    div.addEventListener('dragleave', function () {
-                        div.classList.remove('drag-over');
-                    });
-                    div.addEventListener('drop', function (e) {
-                        e.preventDefault();
-                        div.classList.remove('drag-over');
-                        if (_dragTabId === null || _dragTabId === tid) return;
-                        var fromIdx = -1, toIdx = -1;
-                        for (var j = 0; j < tabs.length; j++) {
-                            if (tabs[j].id === _dragTabId) fromIdx = j;
-                            if (tabs[j].id === tid) toIdx = j;
-                        }
-                        if (fromIdx < 0 || toIdx < 0) return;
-                        var moved = tabs.splice(fromIdx, 1)[0];
-                        tabs.splice(toIdx, 0, moved);
-                        _dragTabId = null;
-                        renderTabs();
-                        backupDirtyTabs();
-                    });
-                })(tab.id);
-                bar.insertBefore(div, newBtn);
-            });
-            // Scroll active tab into view
-            var activeEl = bar.querySelector('.editor-tab.active');
-            if (activeEl) activeEl.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
-        }
-
-        function saveCurrentTabState() {
-            if (!activeTabId) return;
-            var tab = null;
-            for (var i = 0; i < tabs.length; i++) { if (tabs[i].id === activeTabId) { tab = tabs[i]; break; } }
-            if (!tab || !editor) return;
-            tab.editorContent = editor.getValue();
-            tab.cursorPos = editor.getCursor();
-            tab.scrollInfo = editor.getScrollInfo();
-            tab.undoHistory = editor.getDoc().getHistory();
-            tab.isDirty = isDirty;
-            tab.viewMode = viewMode;
-            tab.lastPreviewHadBody = lastPreviewHadBody;
-            tab.designUndoStack = designUndoStack.slice();
-            tab.designRedoStack = designRedoStack.slice();
-            tab.lastDesignSnapshot = lastDesignSnapshot;
-        }
-
-        function restoreTabState(tab) {
-            _isRestoringTab = true;
-            currentFile = tab.filePath;
-            isDirty = tab.isDirty;
-            lastPreviewHadBody = tab.lastPreviewHadBody;
-            designUndoStack = tab.designUndoStack.slice();
-            designRedoStack = tab.designRedoStack.slice();
-            lastDesignSnapshot = tab.lastDesignSnapshot;
-
-            // Suppress change-triggered preview updates during restore
-            isSyncFromDesign = true;
-            editor.setValue(tab.editorContent);
-            if (tab.undoHistory) {
-                editor.getDoc().setHistory(tab.undoHistory);
-            } else {
-                editor.getDoc().clearHistory();
-            }
-            editor.setCursor(tab.cursorPos);
-            editor.scrollTo(tab.scrollInfo.left, tab.scrollInfo.top);
-            isSyncFromDesign = false;
-            _isRestoringTab = false;
-
-            // Restore view mode
-            setViewMode(tab.viewMode);
-
-            // Reload preview
-            clearTimeout(previewDebounceTimer);
-            previewDebounceTimer = null;
-            updatePreview();
-        }
-
-        function switchToTab(tabId) {
-            if (tabId === activeTabId) return;
-            saveCurrentTabState();
-            activeTabId = tabId;
-            var tab = null;
-            for (var i = 0; i < tabs.length; i++) { if (tabs[i].id === tabId) { tab = tabs[i]; break; } }
-            if (!tab) return;
-            restoreTabState(tab);
-            renderTabs();
-        }
-
-        var _saveConfirmResolve = null;
-        function showSaveConfirm(msg) {
-            return new Promise(function (resolve) {
-                document.getElementById('saveConfirmMsg').textContent = msg;
-                var ov = document.getElementById('saveConfirmOverlay');
-                ov.style.display = 'flex';
-                _saveConfirmResolve = function (choice) {
-                    ov.style.display = 'none';
-                    _saveConfirmResolve = null;
-                    resolve(choice);
-                };
-            });
-        }
-
-        async function closeTab(tabId) {
-            var tab = null, idx = -1;
-            for (var i = 0; i < tabs.length; i++) { if (tabs[i].id === tabId) { tab = tabs[i]; idx = i; break; } }
-            if (!tab) return;
-
-            var tabDirty = (tabId === activeTabId) ? isDirty : tab.isDirty;
-            if (tabDirty) {
-                var choice = await showSaveConfirm('Fisierul "' + tab.tabLabel + '" are modificari nesalvate. Salvezi inainte de inchidere?');
-                if (choice === 'cancel') return;
-                if (choice === 'save') {
-                    if (tabId !== activeTabId) switchToTab(tabId);
-                    await saveFile();
-                }
-            }
-
-            removeTabBackup(tabId);
-            // Re-find index (might have changed if switchToTab was called)
-            idx = -1;
-            for (var i = 0; i < tabs.length; i++) { if (tabs[i].id === tabId) { idx = i; break; } }
-            if (idx < 0) return;
-            tabs.splice(idx, 1);
-
-            if (tabs.length === 0) {
-                activeTabId = null;
-                currentFile = null;
-                isDirty = false;
-                editor.setValue('');
-                editor.getDoc().clearHistory();
-                document.getElementById('preview').src = 'about:blank';
-                designUndoStack = [];
-                designRedoStack = [];
-                lastDesignSnapshot = null;
-                removeAllBackups();
-                showOverlay();
-                renderTabs();
-                return;
-            }
-
-            if (tabId === activeTabId) {
-                var newIdx = Math.min(idx, tabs.length - 1);
-                activeTabId = tabs[newIdx].id;
-                restoreTabState(tabs[newIdx]);
-            }
-            backupDirtyTabs();
-            renderTabs();
-        }
-
-        function closeActiveTab() {
-            if (activeTabId) {
-                closeTab(activeTabId);
-            } else {
-                showOverlay();
-            }
-        }
-
-        function onNewTabClick() {
-            saveCurrentTabState();
-            showOverlay();
-        }
-
-        // ===== BACKUP SYSTEM =====
-        var _backupTimer = null;
-
-        function backupDirtyTabs() {
-            // Debounce — save at most every 2 seconds
-            clearTimeout(_backupTimer);
-            _backupTimer = setTimeout(function () {
-                try {
-                    saveCurrentTabState();
-                    var dirtyTabs = [];
-                    for (var i = 0; i < tabs.length; i++) {
-                        if (tabs[i].isDirty) {
-                            dirtyTabs.push({
-                                id: tabs[i].id,
-                                filePath: tabs[i].filePath,
-                                fileName: tabs[i].fileName,
-                                tabLabel: tabs[i].tabLabel,
-                                fullTitle: tabs[i].fullTitle,
-                                editorContent: tabs[i].editorContent,
-                                originalContent: tabs[i].originalContent,
-                                viewMode: tabs[i].viewMode
-                            });
-                        }
-                    }
-                    if (dirtyTabs.length > 0) {
-                        localStorage.setItem('htmlEditorBackupTabs', JSON.stringify(dirtyTabs));
-                    } else {
-                        localStorage.removeItem('htmlEditorBackupTabs');
-                    }
-                } catch (e) { }
-            }, 2000);
-        }
-
-        function removeTabBackup(tabId) {
-            try {
-                var raw = localStorage.getItem('htmlEditorBackupTabs');
-                if (!raw) return;
-                var arr = JSON.parse(raw);
-                arr = arr.filter(function (b) { return b.id !== tabId; });
-                if (arr.length > 0) {
-                    localStorage.setItem('htmlEditorBackupTabs', JSON.stringify(arr));
-                } else {
-                    localStorage.removeItem('htmlEditorBackupTabs');
-                }
-            } catch (e) { }
-        }
-
-        function removeAllBackups() {
-            try { localStorage.removeItem('htmlEditorBackupTabs'); } catch (e) { }
-        }
-
-        function restoreBackupTabs() {
-            try {
-                var raw = localStorage.getItem('htmlEditorBackupTabs');
-                if (!raw) return;
-                var arr = JSON.parse(raw);
-                if (!arr || !arr.length) return;
-                var restored = 0;
-                for (var i = 0; i < arr.length; i++) {
-                    var b = arr[i];
-                    // Skip if already open
-                    if (b.filePath && findTabByPath(b.filePath)) continue;
-                    var tab = createTabState({
-                        filePath: b.filePath,
-                        fileName: b.fileName,
-                        tabLabel: b.tabLabel,
-                        fullTitle: b.fullTitle,
-                        editorContent: b.editorContent,
-                        originalContent: b.originalContent,
-                        viewMode: b.viewMode
-                    });
-                    tab.isDirty = true;
-                    tabs.push(tab);
-                    restored++;
-                }
-                if (restored > 0) {
-                    activeTabId = tabs[0].id;
-                    restoreTabState(tabs[0]);
-                    renderTabs();
-                    hideOverlay();
-                    toast(restored + ' tab' + (restored > 1 ? '-uri nesalvate restaurate' : ' nesalvat restaurat') + ' din backup');
-                }
-            } catch (e) { }
-        }
-        // ===== END BACKUP SYSTEM =====
-
-        // ===== END MULTI-TAB SYSTEM =====
-
         function getDesignBodyHtml() {
             const iframe = document.getElementById('preview');
             const doc = iframe && iframe.contentDocument;
@@ -1815,7 +1252,7 @@ if (isset($_GET['action'])) {
             sidebarVisible = !sidebarVisible;
             const sb = document.querySelector('.sidebar');
             if (sb) sb.classList.toggle('collapsed', !sidebarVisible);
-            try { localStorage.setItem('htmlEditorSidebarVisible', sidebarVisible ? '1' : '0'); } catch (e) { }
+            try { localStorage.setItem('htmlEditorSidebarVisible', sidebarVisible ? '1' : '0'); } catch (e) {}
         }
 
         function toast(msg) {
@@ -1863,17 +1300,17 @@ if (isset($_GET['action'])) {
             const listEl = document.getElementById('recentFilesList');
             const sectionEl = document.getElementById('recentFilesSection');
             if (!listEl || !sectionEl) return;
-
+            
             try {
                 const recent = JSON.parse(localStorage.getItem('htmlEditorRecentFiles')) || [];
                 if (recent.length === 0) {
                     sectionEl.style.display = 'none';
                     return;
                 }
-
+                
                 sectionEl.style.display = 'block';
                 listEl.innerHTML = '';
-
+                
                 recent.forEach(path => {
                     const el = document.createElement('div');
                     el.className = 'recent-item';
@@ -1896,13 +1333,13 @@ if (isset($_GET['action'])) {
                             ${parentDir ? `<span class="recent-folder">${parentDir}</span>` : ''}
                         </span>
                     `;
-
+                    
                     el.onclick = () => {
                         const pathInp = document.getElementById('pathInput');
                         if (pathInp) pathInp.value = path;
                         openFromPath();
                     };
-
+                    
                     listEl.appendChild(el);
                 });
             } catch (e) {
@@ -1928,7 +1365,7 @@ if (isset($_GET['action'])) {
                     el.onclick = () => openFile(path, el);
                     listEl.appendChild(el);
                 });
-            } catch (e) { sectionEl.style.display = 'none'; }
+            } catch(e) { sectionEl.style.display = 'none'; }
         }
 
         // ── SELECT / CROP between SASA-1 / SASA-2 markers ──
@@ -2172,7 +1609,7 @@ if (isset($_GET['action'])) {
             let prev = sasa2.previousSibling;
             // Skip pure-whitespace text nodes right before SASA-2
             while (prev && prev !== sasa1 && prev.nodeType === Node.TEXT_NODE &&
-                !prev.nodeValue.replace(/[\r\n]/g, '').length) {
+                   !prev.nodeValue.replace(/[\r\n]/g, '').length) {
                 prev = prev.previousSibling;
             }
             if (prev && prev !== sasa1) {
@@ -2418,14 +1855,14 @@ if (isset($_GET['action'])) {
             editor.setSize('100%', '100%');
             // Diacritice românești în editorul de cod
             editor.addKeyMap({
-                'Ctrl-A': cm => { cm.replaceSelection('ă'); },
-                'Ctrl-I': cm => { cm.replaceSelection('î'); },
-                'Ctrl-S': cm => { cm.replaceSelection('ṣ'); },
-                'Alt-T': cm => { cm.replaceSelection('ṭ'); },
-                'Alt-Shift-T': cm => { cm.replaceSelection('Ţ'); },
-                'Alt-S': cm => { cm.replaceSelection('Ş'); },
-                'Alt-I': cm => { cm.replaceSelection('Ȋ'); },
-                'Alt-A': cm => { cm.replaceSelection('â'); },
+                'Ctrl-A':       cm => { cm.replaceSelection('ă'); },
+                'Ctrl-I':       cm => { cm.replaceSelection('î'); },
+                'Ctrl-S':       cm => { cm.replaceSelection('ṣ'); },
+                'Alt-T':        cm => { cm.replaceSelection('ṭ'); },
+                'Alt-Shift-T':  cm => { cm.replaceSelection('Ţ'); },
+                'Alt-S':        cm => { cm.replaceSelection('Ş'); },
+                'Alt-I':        cm => { cm.replaceSelection('Ȋ'); },
+                'Alt-A':        cm => { cm.replaceSelection('â'); },
             });
 
             // ── SASA code-side interception ──
@@ -2482,20 +1919,9 @@ if (isset($_GET['action'])) {
 
             editor.on('change', () => {
                 refreshClassListFromCode();
-                // Skip dirty recalculation during tab restore — the tab already has correct isDirty
-                if (!_isRestoringTab && activeTabId) {
-                    var _t = null;
-                    for (var _i = 0; _i < tabs.length; _i++) { if (tabs[_i].id === activeTabId) { _t = tabs[_i]; break; } }
-                    if (_t) {
-                        var nowDirty = (normalizeHtmlForCompare(editor.getValue()) !== _t.originalContentNorm);
-                        if (nowDirty !== _t.isDirty) {
-                            _t.isDirty = nowDirty;
-                            isDirty = nowDirty;
-                            var _el = document.querySelector('.editor-tab[data-tab-id="' + activeTabId + '"]');
-                            if (_el) { if (nowDirty) _el.classList.add('dirty'); else _el.classList.remove('dirty'); }
-                            if (nowDirty) backupDirtyTabs();
-                        }
-                    }
+                isDirty = true;
+                if (currentFile) {
+                    document.getElementById('tabFile').textContent = shortName(currentFile) + ' *';
                 }
                 if (isSyncFromDesign) return;
                 if (isApplyingUndoRedo) return;
@@ -2662,62 +2088,12 @@ if (isset($_GET['action'])) {
             const sel = document.getElementById('propClass');
             if (!sel) return;
             sel.innerHTML = '<option value=\"\">(fara)</option>';
-
-            const iframe = document.getElementById('preview');
-            const doc = iframe && iframe.contentDocument;
-            const win = iframe && iframe.contentWindow;
-            let hiddenSpan = null;
-            let defaultBg = '#ffffff';
-
-            if (doc && doc.body && win) {
-                hiddenSpan = doc.createElement('span');
-                hiddenSpan.style.visibility = 'hidden';
-                hiddenSpan.style.position = 'absolute';
-                hiddenSpan.style.whiteSpace = 'nowrap';
-                hiddenSpan.innerHTML = 'Test';
-                doc.body.appendChild(hiddenSpan);
-
-                const bodyComp = win.getComputedStyle(doc.body);
-                if (bodyComp && bodyComp.backgroundColor && bodyComp.backgroundColor !== 'rgba(0, 0, 0, 0)' && bodyComp.backgroundColor !== 'transparent') {
-                    defaultBg = bodyComp.backgroundColor;
-                }
-            }
-
             cssClasses.forEach(c => {
                 const opt = document.createElement('option');
                 opt.value = c;
                 opt.textContent = c;
-
-                if (hiddenSpan && win) {
-                    hiddenSpan.className = c;
-                    const comp = win.getComputedStyle(hiddenSpan);
-                    if (comp) {
-                        opt.style.backgroundColor = defaultBg;
-
-                        if (comp.color && comp.color !== 'rgba(0, 0, 0, 0)' && comp.color !== 'transparent') {
-                            opt.style.color = comp.color;
-                        } else {
-                            opt.style.color = '#000000';
-                        }
-
-                        if (comp.fontSize) {
-                            opt.style.fontSize = comp.fontSize;
-                        }
-                        if (comp.fontWeight) {
-                            opt.style.fontWeight = comp.fontWeight;
-                        }
-                        if (comp.backgroundColor && comp.backgroundColor !== 'rgba(0, 0, 0, 0)' && comp.backgroundColor !== 'transparent') {
-                            opt.style.backgroundColor = comp.backgroundColor;
-                        }
-                    }
-                }
-
                 sel.appendChild(opt);
             });
-
-            if (hiddenSpan && hiddenSpan.parentNode) {
-                hiddenSpan.parentNode.removeChild(hiddenSpan);
-            }
         }
 
         async function refreshList(dir) {
@@ -2777,57 +2153,28 @@ if (isset($_GET['action'])) {
         }
 
         async function openFile(path, el) {
-            // Check if file is already open in a tab
-            var existing = findTabByPath(path);
-            if (existing) {
-                switchToTab(existing.id);
-                hideOverlay();
-                return;
-            }
             try {
                 toast('Se deschide...');
                 const res = await fetch('?action=load&file=' + encodeURIComponent(path));
                 const data = await res.json();
                 if (!data.ok) { toast('Eroare: ' + data.error); return; }
-
-                // Save current tab state before creating new one
-                saveCurrentTabState();
-
-                var label = getTabLabel(data.content, data.file);
-                var fullT = getTabFullTitle(data.content, data.file);
-                var tab = createTabState({
-                    filePath: data.file,
-                    fileName: shortName(data.file),
-                    tabLabel: label,
-                    fullTitle: fullT,
-                    editorContent: data.content,
-                    originalContent: data.content,
-                    lastPreviewHadBody: /<body\b/i.test(data.content)
-                });
-                tabs.push(tab);
-                activeTabId = tab.id;
-
                 currentFile = data.file;
                 addToRecentFiles(currentFile);
-                _isRestoringTab = true;
-                isSyncFromDesign = true;
                 editor.setValue(data.content);
-                isSyncFromDesign = false;
-                _isRestoringTab = false;
                 editor.getDoc().clearHistory();
-                lastPreviewHadBody = tab.lastPreviewHadBody;
+                lastPreviewHadBody = /<body\b/i.test(data.content);
+                // Cancel any preview-debounce that editor.setValue()'s change event just scheduled.
+                // Without this, a second updatePreview() fires 500ms later, causing a race
+                // condition where the DOMContentLoaded callback gets consumed by the wrong closure
+                // and makeDesignEditable is never called on the final loaded page.
                 clearTimeout(previewDebounceTimer);
                 previewDebounceTimer = null;
+                document.getElementById('tabFile').textContent = shortName(currentFile);
                 document.querySelectorAll('.file').forEach(f => f.classList.remove('active'));
                 if (el) el.classList.add('active');
                 updatePreview();
+                // Nu mai afișăm toast „Fisier incarcat” lângă butonul FIND
                 isDirty = false;
-                designUndoStack = [];
-                designRedoStack = [];
-                lastDesignSnapshot = null;
-
-                renderTabs();
-                hideOverlay();
             } catch (e) {
                 toast('Eroare la deschidere: ' + e.message);
             }
@@ -2845,21 +2192,8 @@ if (isset($_GET['action'])) {
                 const res = await fetch('?action=save', { method: 'POST', body });
                 const data = await res.json();
                 if (!data.ok) { toast('Eroare la salvare: ' + data.error); return; }
+                document.getElementById('tabFile').textContent = shortName(currentFile);
                 isDirty = false;
-                if (activeTabId) {
-                    var tab = null;
-                    for (var i = 0; i < tabs.length; i++) { if (tabs[i].id === activeTabId) { tab = tabs[i]; break; } }
-                    if (tab) {
-                        tab.isDirty = false;
-                        tab.filePath = currentFile;
-                        tab.originalContent = editor.getValue();
-                        tab.originalContentNorm = normalizeHtmlForCompare(tab.originalContent);
-                        tab.tabLabel = getTabLabel(editor.getValue(), currentFile);
-                        tab.fullTitle = getTabFullTitle(editor.getValue(), currentFile);
-                        removeTabBackup(tab.id);
-                        renderTabs();
-                    }
-                }
                 toast('Salvat: ' + currentFile);
                 updatePreview();
             } catch (e) {
@@ -2886,8 +2220,6 @@ if (isset($_GET['action'])) {
             clearSasaDesignHighlight(doc);
             // Replace &nbsp; with regular space in SASA region and h1.den_articol
             const newBody = '<body' + bodyMatch[1] + '>' + cleanNbspInHtml(doc.body.innerHTML) + '</body>';
-            // Only update code if the body actually changed (avoids false dirty on select/copy)
-            if (newBody === bodyMatch[0]) return;
             isSyncFromDesign = true;
             const from = editor.posFromIndex(bodyMatch.index);
             const to = editor.posFromIndex(bodyMatch.index + bodyMatch[0].length);
@@ -2904,45 +2236,17 @@ if (isset($_GET['action'])) {
             const doc = iframe.contentDocument;
             if (!doc || !doc.body || !isCurrentFileHtml()) return;
             doc.body.contentEditable = 'true';
-            // Block text drag-and-drop in design panel (prevents accidental moves)
-            doc.addEventListener('dragstart', function (e) { e.preventDefault(); });
-            doc.addEventListener('drop', function (e) { e.preventDefault(); });
             // Initialize the custom undo/redo stack for this freshly-loaded page.
             // The 500ms periodic timer inside captures typing snapshots automatically.
             designResetUndoStack();
-            // Chromium on Windows can fire a spurious 'input' event immediately after
-            // a clipboard copy (Ctrl+C) on contentEditable elements, even though no
-            // content was actually modified. Suppress any 'input' that arrives within
-            // 150ms of a 'copy' event so it never triggers a false dirty state.
-            let _suppressInputAfterCopy = false;
-            // Track when a Ctrl/Meta combo keydown happens. On keyup, the user may
-            // have already released Ctrl, making e.ctrlKey false. Without this
-            // tracking, the keyup handler would erroneously trigger syncFromDesign
-            // for non-modifying shortcuts (Ctrl+C, Ctrl+A, etc.), which then detects
-            // browser HTML normalization differences as real content changes.
-            let _lastCtrlComboTime = 0;
-            doc.addEventListener('keydown', (e) => {
-                if (e.ctrlKey || e.metaKey) _lastCtrlComboTime = Date.now();
-            });
-            doc.addEventListener('copy', () => {
-                _suppressInputAfterCopy = true;
-                setTimeout(() => { _suppressInputAfterCopy = false; }, 150);
-            });
             doc.body.addEventListener('input', () => {
                 if (isApplyingUndoRedo) return;
-                if (_suppressInputAfterCopy) return;
                 clearTimeout(designInputDebounceTimer);
                 designInputDebounceTimer = setTimeout(syncFromDesign, 80);
             });
             doc.body.addEventListener('keyup', (e) => {
                 if (isApplyingUndoRedo) return;
-                // Suppress keyup events from Ctrl/Meta combos (Ctrl+C, Ctrl+A, etc.).
-                // The user may release Ctrl before the letter key, so e.ctrlKey can be
-                // false on keyup. We use a 300ms window from the last Ctrl keydown.
-                // Content-modifying combos (Ctrl+V, Ctrl+X, Ctrl+B) already fire the
-                // 'input' event above, so the keyup safety-net is not needed for them.
-                if (e.ctrlKey || e.metaKey) return;
-                if (Date.now() - _lastCtrlComboTime < 300) return;
+                // Skip keys that don't modify content (navigation, modifiers, PrintScreen, F-keys, etc.)
                 if (e.key === 'PrintScreen' || e.key === 'Escape' ||
                     e.key === 'Tab' || e.key === 'CapsLock' ||
                     e.key === 'NumLock' || e.key === 'ScrollLock' || e.key === 'Pause' ||
@@ -3033,7 +2337,7 @@ if (isset($_GET['action'])) {
                                 ? navigator.clipboard.readText()
                                 : Promise.resolve('')
                             ).then(clipText => doSasaEdit(clipText || ''))
-                                .catch(() => deactivateSasa());
+                             .catch(() => deactivateSasa());
                         } else {
                             doSasaEdit(isPrintable ? e.key : '');
                         }
@@ -3047,8 +2351,8 @@ if (isset($_GET['action'])) {
                     else if (!e.shiftKey && e.key === 'i') _diac = 'î';
                     else if (!e.shiftKey && e.key === 's') _diac = 'ṣ';
                 } else if (e.altKey && !e.ctrlKey && !e.metaKey) {
-                    if (!e.shiftKey && e.key === 't') _diac = 'ṭ';
-                    else if (e.shiftKey && e.key === 'T') _diac = 'Ţ';
+                    if      (!e.shiftKey && e.key === 't') _diac = 'ṭ';
+                    else if (e.shiftKey  && e.key === 'T') _diac = 'Ţ';
                     else if (!e.shiftKey && e.key === 's') _diac = 'Ş';
                     else if (!e.shiftKey && e.key === 'i') _diac = 'Ȋ';
                     else if (!e.shiftKey && e.key === 'a') _diac = 'â';
@@ -3085,7 +2389,6 @@ if (isset($_GET['action'])) {
             }, true);
             // Re-apply CROP highlight after iframe reload (if active)
             if (cropHighlightActive) highlightSasaInDesign();
-            refreshClassListFromCode();
         }
 
         function cancelPreviewUpdateForUndoRedo() {
@@ -3482,7 +2785,7 @@ if (isset($_GET['action'])) {
         // a yellow markText so the selected design text is clearly visible in the code.
         function highlightSelectionInCode(globalIdx, len) {
             const from = editor.posFromIndex(globalIdx);
-            const to = editor.posFromIndex(globalIdx + len);
+            const to   = editor.posFromIndex(globalIdx + len);
             // Clear any previous selection highlight mark
             if (syncSelectionMark) { syncSelectionMark.clear(); syncSelectionMark = null; }
             isSelectionFromDesign = true;
@@ -3510,7 +2813,7 @@ if (isset($_GET['action'])) {
         // Walk source HTML to find the (childIdx)-th element child starting at offset.
         // Returns the position of the '<' that opens that element, or -1.
         function findChildOpenInSource(html, offset, childIdx) {
-            const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+            const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
             let depth = 0;
             let elemCount = 0;
             let i = offset;
@@ -3541,7 +2844,7 @@ if (isset($_GET['action'])) {
                 while (nameEnd < html.length) {
                     const cc = html.charCodeAt(nameEnd);
                     if (!((cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122) ||
-                        (cc >= 48 && cc <= 57) || cc === 45)) break; // A-Z a-z 0-9 -
+                          (cc >= 48 && cc <= 57) || cc === 45)) break; // A-Z a-z 0-9 -
                     nameEnd++;
                 }
                 if (nameEnd === nameStart) { i++; continue; }
@@ -3698,7 +3001,7 @@ if (isset($_GET['action'])) {
 
             // Strategy 5: nearest block-level ancestor (fallback for inline elements)
             if (idx === -1) {
-                const BLOCK = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th', 'tr', 'section', 'article', 'blockquote', 'pre', 'figure', 'header', 'footer', 'nav', 'main']);
+                const BLOCK = new Set(['p','div','h1','h2','h3','h4','h5','h6','li','td','th','tr','section','article','blockquote','pre','figure','header','footer','nav','main']);
                 let ancestor = el.parentElement;
                 while (ancestor && ancestor !== doc.body) {
                     const aTag = (ancestor.tagName || '').toLowerCase();
@@ -3839,62 +3142,16 @@ if (isset($_GET['action'])) {
             const computed = el.ownerDocument.defaultView.getComputedStyle(el);
             const fontVal = (st.fontFamily || computed.fontFamily || '').split(',')[0].replace(/['"]/g, '').trim();
             const opt = [].find.call(fontSel.options, o => o.value === fontVal || (o.value && o.value.indexOf(fontVal) === 0));
-            // Remove any previously-inserted dynamic font option
-            var _dynFont = fontSel.querySelector('option[data-dynamic]');
-            if (_dynFont) _dynFont.remove();
-            if (opt) {
-                fontSel.value = opt.value;
-            } else if (fontVal) {
-                // Computed font doesn't match any preset — add a temporary option
-                var _df = document.createElement('option');
-                _df.value = fontVal;
-                _df.textContent = fontVal;
-                _df.setAttribute('data-dynamic', '1');
-                fontSel.insertBefore(_df, fontSel.firstChild.nextSibling);
-                fontSel.value = fontVal;
-            } else {
-                fontSel.value = '';
-            }
+            fontSel.value = opt ? opt.value : '';
             const px = computed.fontSize ? parseFloat(computed.fontSize) : 0;
-            const pxRound = px ? String(Math.round(px)) : '';
-            // Remove any previously-inserted dynamic size option
-            var _dynSize = sizeSel.querySelector('option[data-dynamic]');
-            if (_dynSize) _dynSize.remove();
-            if (pxRound && [].some.call(sizeSel.options, o => o.value === pxRound)) {
-                sizeSel.value = pxRound;
-            } else if (pxRound) {
-                // Computed size doesn't match any preset — add a temporary option
-                var _ds = document.createElement('option');
-                _ds.value = pxRound;
-                _ds.textContent = pxRound + 'px';
-                _ds.setAttribute('data-dynamic', '1');
-                // Insert in correct sorted position
-                var _inserted = false;
-                for (var _si = 1; _si < sizeSel.options.length; _si++) {
-                    if (sizeSel.options[_si].value && parseInt(sizeSel.options[_si].value) > parseInt(pxRound)) {
-                        sizeSel.insertBefore(_ds, sizeSel.options[_si]);
-                        _inserted = true;
-                        break;
-                    }
-                }
-                if (!_inserted) sizeSel.appendChild(_ds);
-                sizeSel.value = pxRound;
-            } else {
-                sizeSel.value = '';
-            }
+            sizeSel.value = px ? String(Math.round(px)) : '';
             boldBtn.style.background = (computed.fontWeight === '700' || computed.fontWeight === 'bold') ? 'rgba(59,130,246,0.3)' : '';
             italicBtn.style.background = computed.fontStyle === 'italic' ? 'rgba(59,130,246,0.3)' : '';
             colorInp.value = rgbToHex(computed.color) || '#000000';
             bgInp.value = rgbToHex(computed.backgroundColor) || '#ffffff';
             if (classSel) {
-                var cls = '';
-                var _ce = el;
-                while (_ce && _ce.nodeType === 1 && _ce.tagName !== 'BODY') {
-                    var _cn = (_ce.className || '').trim().split(/\s+/)[0] || '';
-                    if (_cn && cssClasses.includes(_cn)) { cls = _cn; break; }
-                    _ce = _ce.parentElement;
-                }
-                classSel.value = cls || '';
+                const cls = (el.className || '').trim().split(/\s+/)[0] || '';
+                classSel.value = cssClasses.includes(cls) ? cls : '';
             }
             if (!isSelectionFromCode) {
                 syncSelectionToCodeFromDesign();
@@ -4050,7 +3307,7 @@ if (isset($_GET['action'])) {
 
                 // Case 1: selection covers the entire content of a block element
                 // → change the block's class directly instead of wrapping in a span
-                const BLOCK_TAGS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th', 'blockquote', 'pre', 'article', 'section', 'figure', 'header', 'footer', 'main', 'nav']);
+                const BLOCK_TAGS = new Set(['p','div','h1','h2','h3','h4','h5','h6','li','td','th','blockquote','pre','article','section','figure','header','footer','main','nav']);
                 if (BLOCK_TAGS.has((ancestor.tagName || '').toLowerCase()) &&
                     selectedText.trim() === ancestor.textContent.trim()) {
                     if (value) {
@@ -4132,7 +3389,7 @@ if (isset($_GET['action'])) {
         async function openFromPath() {
             const inp = document.getElementById('pathInput');
             let p = (inp.value || '').trim();
-            p = p.replace(/^[“']+|[“']+$/g, '').trim();
+            p = p.replace(/^["']+|["']+$/g, '').trim();
             if (!p) { dropStatus('Scrie calea catre fisier', '#ef4444'); return; }
             dropStatus('Se deschide...', '#60a5fa');
             try {
@@ -4142,61 +3399,44 @@ if (isset($_GET['action'])) {
                 let data;
                 try { data = JSON.parse(txt); } catch (e) { dropStatus('Raspuns invalid (nu e JSON)', '#ef4444'); return; }
                 if (!data.ok) { dropStatus('Eroare: ' + (data.error || 'necunoscuta'), '#ef4444'); return; }
-
-                // Check if already open
-                var existing = findTabByPath(data.file);
-                if (existing) {
-                    switchToTab(existing.id);
-                    hideOverlay();
-                    dropStatus('');
-                    return;
-                }
-
-                saveCurrentTabState();
-
-                var cnt = data.content || '';
-                var label = getTabLabel(cnt, data.file);
-                var fullT = getTabFullTitle(cnt, data.file);
-                var tab = createTabState({
-                    filePath: data.file,
-                    fileName: shortName(data.file),
-                    tabLabel: label,
-                    fullTitle: fullT,
-                    editorContent: cnt,
-                    originalContent: cnt,
-                    lastPreviewHadBody: /<body\b/i.test(cnt)
-                });
-                tabs.push(tab);
-                activeTabId = tab.id;
-
                 currentFile = data.file;
                 addToRecentFiles(currentFile);
-                _isRestoringTab = true;
-                isSyncFromDesign = true;
                 editor.setValue(data.content || '');
-                isSyncFromDesign = false;
-                _isRestoringTab = false;
                 editor.getDoc().clearHistory();
-                lastPreviewHadBody = tab.lastPreviewHadBody;
                 clearTimeout(previewDebounceTimer);
                 previewDebounceTimer = null;
+                document.getElementById('tabFile').textContent = shortName(currentFile);
                 document.querySelectorAll('.file').forEach(f => f.classList.remove('active'));
                 updatePreview();
-                isDirty = false;
-                designUndoStack = [];
-                designRedoStack = [];
-                lastDesignSnapshot = null;
-
-                renderTabs();
+                // Nu mai afișăm toast „Fisier incarcat” pentru fișierele încărcate prin drag&drop
                 hideOverlay();
                 dropStatus('');
+                isDirty = false;
             } catch (e) {
                 dropStatus('Eroare: ' + e.message, '#ef4444');
             }
         }
 
         function closeEditor() {
-            closeActiveTab();
+            if (!editor) { showOverlay(); return; }
+            if (currentFile) {
+                addToRecentFiles(currentFile);
+            }
+            const hasContent = editor.getValue().trim().length > 0;
+            if (isDirty && hasContent) {
+                const doSave = confirm('Exista modificari nesalvate. Vrei sa le salvezi inainte de inchidere?');
+                if (doSave) {
+                    saveFile();
+                }
+            }
+            editor.setValue('');
+            currentFile = null;
+            document.getElementById('tabFile').textContent = 'Niciun fisier deschis';
+            const iframe = document.getElementById('preview');
+            if (iframe) iframe.src = 'about:blank';
+            document.querySelectorAll('.file').forEach(f => f.classList.remove('active'));
+            isDirty = false;
+            showOverlay();
         }
 
         const ALLOWED_EXT = ['.html', '.htm', '.css', '.js', '.php'];
@@ -4216,50 +3456,19 @@ if (isset($_GET['action'])) {
         function handleDropFile(file) {
             if (!file) { dropStatus('Niciun fisier primit', '#ef4444'); return; }
             if (!hasAllowedExt(file.name)) { dropStatus('Doar fisiere HTML, CSS, JS sau PHP', '#ef4444'); return; }
-            dropStatus('Se citeste fisierul “' + file.name + '”...', '#60a5fa');
+            dropStatus('Se citeste fisierul "' + file.name + '"...', '#60a5fa');
             const reader = new FileReader();
             reader.onload = function () {
-                var content = reader.result || '';
-
-                // Save current tab before creating new one
-                saveCurrentTabState();
-
-                var label = getTabLabel(content, file.name);
-                var fullT = getTabFullTitle(content, file.name);
-                var tab = createTabState({
-                    filePath: null,
-                    fileName: file.name,
-                    tabLabel: label,
-                    fullTitle: fullT,
-                    editorContent: content,
-                    originalContent: content,
-                    lastPreviewHadBody: /<body\b/i.test(content)
-                });
-                tabs.push(tab);
-                activeTabId = tab.id;
-                var newTabId = tab.id;
-
-                currentFile = null;
-                _isRestoringTab = true;
-                isSyncFromDesign = true;
-                editor.setValue(content);
-                isSyncFromDesign = false;
-                _isRestoringTab = false;
+                editor.setValue(reader.result || '');
                 editor.getDoc().clearHistory();
-                lastPreviewHadBody = tab.lastPreviewHadBody;
                 clearTimeout(previewDebounceTimer);
                 previewDebounceTimer = null;
+                currentFile = null;
+                document.getElementById('tabFile').textContent = file.name;
                 updatePreview();
                 document.querySelectorAll('.file').forEach(f => f.classList.remove('active'));
-                isDirty = false;
-                designUndoStack = [];
-                designRedoStack = [];
-                lastDesignSnapshot = null;
-
-                renderTabs();
                 hideOverlay();
                 dropStatus('');
-
                 // Cauta automat calea fisierului pe disc dupa nume
                 const extraDirs = getRecentDirs();
                 const searchUrl = '?action=search&name=' + encodeURIComponent(file.name)
@@ -4267,35 +3476,20 @@ if (isset($_GET['action'])) {
                 fetch(searchUrl)
                     .then(r => r.json())
                     .then(data => {
-                        // Helper to update tab when path resolved
-                        function resolveTabPath(resolvedPath) {
-                            // Check if another tab already has this path
-                            var existingTab = findTabByPath(resolvedPath);
-                            if (existingTab && existingTab.id !== newTabId) {
-                                // Duplicate — close the new tab and switch to existing
-                                closeTab(newTabId);
-                                switchToTab(existingTab.id);
-                                return;
-                            }
-                            currentFile = resolvedPath;
-                            // Update the tab object
-                            for (var ti = 0; ti < tabs.length; ti++) {
-                                if (tabs[ti].id === newTabId) {
-                                    tabs[ti].filePath = resolvedPath;
-                                    tabs[ti].tabLabel = getTabLabel(editor.getValue(), resolvedPath);
-                                    break;
-                                }
-                            }
-                            isDirty = false;
-                            addToRecentFiles(resolvedPath);
-                            renderTabs();
-                            toast('Fisier gasit: ' + resolvedPath);
-                            updatePreview();
-                        }
-
                         if (data.ok && data.results && data.results.length === 1) {
-                            resolveTabPath(data.results[0]);
+                            // Exact one match — safe to use it directly
+                            currentFile = data.results[0];
+                            document.getElementById('tabFile').textContent = shortName(currentFile);
+                            isDirty = false;
+                            addToRecentFiles(currentFile);
+                            toast('Fisier gasit: ' + currentFile);
+                            updatePreview(); // re-render via PHP cu <base> corect pentru CSS/imagini relative
                         } else if (data.ok && data.results && data.results.length > 1) {
+                            // Multiple files with the same name exist on disk (e.g. Principal/ and
+                            // Principal 2022/).  Picking results[0] alphabetically is WRONG — it
+                            // would silently redirect the preview to a different design folder.
+                            // Instead, compare the dragged file's content against each candidate
+                            // and only auto-set currentFile when we find an exact content match.
                             const draggedContent = editor.getValue().replace(/\r\n/g, '\n');
                             Promise.all(
                                 data.results.map(path =>
@@ -4307,60 +3501,41 @@ if (isset($_GET['action'])) {
                                 let matched = null;
                                 for (let i = 0; i < loaded.length; i++) {
                                     if (loaded[i] && loaded[i].ok &&
-                                        (loaded[i].content || '').replace(/\r\n/g, '\n') === draggedContent) {
+                                            (loaded[i].content || '').replace(/\r\n/g, '\n') === draggedContent) {
                                         matched = data.results[i];
                                         break;
                                     }
                                 }
                                 if (matched) {
-                                    resolveTabPath(matched);
+                                    currentFile = matched;
+                                    document.getElementById('tabFile').textContent = shortName(currentFile);
+                                    isDirty = false;
+                                    addToRecentFiles(currentFile);
+                                    toast('Fisier gasit: ' + currentFile);
+                                    updatePreview();
+                                } else {
+                                    // Cannot determine which copy — leave currentFile=null and
+                                    // let the user open it manually from the tree.
+                                    // Mesajul detaliat despre „Fisier incarcat” a fost dezactivat.
                                 }
                             });
+                        } else {
+                            // toast('Fisier incarcat: ' + file.name + ' (cale necunoscuta)');
                         }
                     })
-                    .catch(() => { });
+                    .catch(() => {
+                        // toast('Fisier incarcat: ' + file.name);
+                    });
             };
             reader.onerror = function () { dropStatus('Eroare la citirea fisierului', '#ef4444'); };
             reader.readAsText(file, 'UTF-8');
         }
-
-        window.addEventListener('beforeunload', function (e) {
-            saveCurrentTabState();
-            var hasUnsaved = tabs.some(function (t) { return t.isDirty; }) || isDirty;
-            if (hasUnsaved) {
-                // Force immediate backup (bypass debounce)
-                try {
-                    var dirtyTabs = [];
-                    for (var i = 0; i < tabs.length; i++) {
-                        if (tabs[i].isDirty) {
-                            dirtyTabs.push({
-                                id: tabs[i].id,
-                                filePath: tabs[i].filePath,
-                                fileName: tabs[i].fileName,
-                                tabLabel: tabs[i].tabLabel,
-                                fullTitle: tabs[i].fullTitle,
-                                editorContent: tabs[i].editorContent,
-                                originalContent: tabs[i].originalContent,
-                                viewMode: tabs[i].viewMode
-                            });
-                        }
-                    }
-                    if (dirtyTabs.length > 0) {
-                        localStorage.setItem('htmlEditorBackupTabs', JSON.stringify(dirtyTabs));
-                    }
-                } catch (ex) { }
-                e.preventDefault();
-                e.returnValue = '';
-            }
-        });
 
         window.addEventListener('load', () => {
             initEditor();
             refreshList('');
             renderRecentFiles();
             renderSidebarRecent();
-            // Restore unsaved tabs from backup (e.g. after power loss)
-            restoreBackupTabs();
             // Restore sidebar visibility from last session
             try {
                 const sv = localStorage.getItem('htmlEditorSidebarVisible');
@@ -4369,7 +3544,7 @@ if (isset($_GET['action'])) {
                     const sb = document.querySelector('.sidebar');
                     if (sb) sb.classList.add('collapsed');
                 }
-            } catch (e) { }
+            } catch (e) {}
             document.addEventListener('dragover', e => e.preventDefault(), false);
             document.addEventListener('drop', e => e.preventDefault(), false);
 
@@ -4435,7 +3610,7 @@ if (isset($_GET['action'])) {
     </script>
     <script>
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js').catch(function () { });
+            navigator.serviceWorker.register('sw.js').catch(function() {});
         }
     </script>
 </body>

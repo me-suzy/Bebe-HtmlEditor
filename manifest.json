@@ -1,0 +1,44 @@
+{
+  "id": "/htmleditor/index%20V.4.php",
+  "name": "Mini Dreamweaver - Editor HTML/PHP",
+  "short_name": "HTML Editor",
+  "description": "Editor HTML/PHP cu Code + Design view",
+  "start_url": "index%20V.4.php",
+  "display": "standalone",
+  "background_color": "#1e1f26",
+  "theme_color": "#252633",
+  "icons": [
+    {
+      "src": "favicon-32.png",
+      "sizes": "32x32",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "favicon-256.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "favicon-256.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "favicon-256.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "form_factor": "wide"
+    },
+    {
+      "src": "favicon-256.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "form_factor": "narrow"
+    }
+  ]
+}
