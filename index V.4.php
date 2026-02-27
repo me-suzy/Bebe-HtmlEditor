@@ -1558,6 +1558,8 @@ if (isset($_GET['action'])) {
         }
 
         function restoreTabState(tab) {
+            if (typeof deactivateSasa === 'function' && sasaSelectionActive) deactivateSasa();
+            if (typeof deactivateCrop === 'function' && cropHighlightActive) deactivateCrop();
             _isRestoringTab = true;
             currentFile = tab.filePath;
             isDirty = tab.isDirty;
@@ -1592,6 +1594,9 @@ if (isset($_GET['action'])) {
         function switchToTab(tabId) {
             if (tabId === activeTabId) return;
             if (typeof flushPendingDesignSync === 'function') flushPendingDesignSync();
+            // Deactivate CROP and SELECT modes when switching tabs
+            if (typeof deactivateSasa === 'function' && typeof sasaSelectionActive !== 'undefined' && sasaSelectionActive) deactivateSasa();
+            if (typeof deactivateCrop === 'function' && typeof cropHighlightActive !== 'undefined' && cropHighlightActive) deactivateCrop();
             saveCurrentTabState();
             activeTabId = tabId;
             var tab = null;
@@ -1647,6 +1652,8 @@ if (isset($_GET['action'])) {
                 designUndoStack = [];
                 designRedoStack = [];
                 lastDesignSnapshot = null;
+                if (typeof deactivateSasa === 'function' && sasaSelectionActive) deactivateSasa();
+                if (typeof deactivateCrop === 'function' && cropHighlightActive) deactivateCrop();
                 removeAllBackups();
                 showOverlay();
                 renderTabs();
@@ -1666,12 +1673,17 @@ if (isset($_GET['action'])) {
             if (activeTabId) {
                 closeTab(activeTabId);
             } else {
+                if (typeof deactivateSasa === 'function' && sasaSelectionActive) deactivateSasa();
+                if (typeof deactivateCrop === 'function' && cropHighlightActive) deactivateCrop();
+                hideOverlay(); // just to be safe, though showOverlay is more likely
                 showOverlay();
             }
         }
 
         function onNewTabClick() {
             saveCurrentTabState();
+            if (typeof deactivateSasa === 'function' && sasaSelectionActive) deactivateSasa();
+            if (typeof deactivateCrop === 'function' && cropHighlightActive) deactivateCrop();
             showOverlay();
         }
 
@@ -2838,6 +2850,10 @@ if (isset($_GET['action'])) {
                 const res = await fetch('?action=load&file=' + encodeURIComponent(path));
                 const data = await res.json();
                 if (!data.ok) { toast('Eroare: ' + data.error); return; }
+
+                // Deactivate CROP and SELECT modes when opening a new file
+                if (typeof deactivateSasa === 'function' && typeof sasaSelectionActive !== 'undefined' && sasaSelectionActive) deactivateSasa();
+                if (typeof deactivateCrop === 'function' && typeof cropHighlightActive !== 'undefined' && cropHighlightActive) deactivateCrop();
 
                 // Save current tab state before creating new one
                 saveCurrentTabState();
