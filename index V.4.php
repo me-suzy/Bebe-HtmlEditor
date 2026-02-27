@@ -2561,6 +2561,17 @@ if (isset($_GET['action'])) {
                 }, 500);
             });
 
+            let _isCodeDragging = false;
+            editor.getWrapperElement().addEventListener('mousedown', () => { _isCodeDragging = true; });
+            window.addEventListener('mouseup', () => {
+                if (_isCodeDragging) {
+                    _isCodeDragging = false;
+                    // Trigger sync once drag ends
+                    if (editor && !isCursorInsideSasa() && !sasaSelectionActive) {
+                        syncSelectionToDesignFromCode();
+                    }
+                }
+            });
             editor.on('cursorActivity', () => {
                 if (isSelectionFromDesign) return;
                 if (isSyncFromDesign) return;
@@ -2576,7 +2587,10 @@ if (isset($_GET['action'])) {
                 // Clear the yellow selection mark when the user moves the cursor in code
                 if (syncSelectionMark) { syncSelectionMark.clear(); syncSelectionMark = null; }
                 // In afara zonei SASA putem sincroniza selectia spre Design.
-                if (!sasaSelectionActive) {
+                // IMPORTANT: Nu sincronizam cat timp user-ul tine click apasat 
+                // pentru a trage o selectie in mod cursiv, altfel scroll-ul 
+                // din Design va rupe focus-ul si va arunca selectia din Code-Mirror in jos.
+                if (!sasaSelectionActive && !_isCodeDragging) {
                     syncSelectionToDesignFromCode();
                 }
             });
@@ -2991,6 +3005,18 @@ if (isset($_GET['action'])) {
                 _suppressInputAfterCopy = true;
                 setTimeout(() => { _suppressInputAfterCopy = false; }, 150);
             });
+            doc.addEventListener('paste', (e) => {
+                // Force copy-paste to insert as plain text so we don't bring in
+                // inline styles, spans, or classes from external sources (e.g. Google Translate).
+                e.preventDefault();
+                const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+                if (text) {
+                    designSaveSnapshot();
+                    doc.execCommand('insertText', false, text);
+                    clearTimeout(designInputDebounceTimer);
+                    designInputDebounceTimer = setTimeout(syncFromDesign, 80);
+                }
+            });
             doc.body.addEventListener('input', () => {
                 if (isApplyingUndoRedo) return;
                 if (_suppressInputAfterCopy) return;
@@ -3205,7 +3231,6 @@ if (isset($_GET['action'])) {
             if (current !== null) designRedoStack.push(current);
             // Pop previous state
             const prev = designUndoStack.pop();
-            lastDesignSnapshot = prev;
             // Apply to iframe
             const win = iframe.contentWindow;
             const sx = win ? win.scrollX || 0 : 0;
@@ -3216,6 +3241,8 @@ if (isset($_GET['action'])) {
             if (win) win.scrollTo(sx, sy);
             isSyncFromCode = false;
             isApplyingUndoRedo = false;
+            // Snapshot the EXACT normalized browser state so the 500ms timer doesn't falsely detect changes
+            lastDesignSnapshot = getDesignBodyHtml();
             // Sync the reverted body back to the code editor.
             // If the undo stack is now empty, we're back at the initial state.
             // Restore the exact original code (designCleanCode) instead of using
@@ -3287,7 +3314,6 @@ if (isset($_GET['action'])) {
             }
             // Pop next state from redo
             const next = designRedoStack.pop();
-            lastDesignSnapshot = next;
             // Apply to iframe
             const win = iframe.contentWindow;
             const sx = win ? win.scrollX || 0 : 0;
@@ -3298,6 +3324,8 @@ if (isset($_GET['action'])) {
             if (win) win.scrollTo(sx, sy);
             isSyncFromCode = false;
             isApplyingUndoRedo = false;
+            // Snapshot the EXACT normalized browser state so the 500ms timer doesn't falsely detect changes
+            lastDesignSnapshot = getDesignBodyHtml();
             // Sync the redo-applied body back to the code editor
             syncFromDesign();
             // Force dirty state recalculation and tab update after redo
