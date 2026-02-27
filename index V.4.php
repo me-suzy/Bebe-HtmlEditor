@@ -1500,6 +1500,12 @@ if (isset($_GET['action'])) {
                 h1.style.outline = '2px solid #3b82f6';
                 h1.style.backgroundColor = 'rgba(59,130,246,0.12)';
             });
+            // Also highlight td.text_dreapta (date/category line)
+            doc.querySelectorAll('td.text_dreapta').forEach(td => {
+                td.setAttribute('data-sasa-highlight', '1');
+                td.style.outline = '2px solid #3b82f6';
+                td.style.backgroundColor = 'rgba(59,130,246,0.12)';
+            });
         }
 
         function clearSasaDesignHighlight(doc) {
