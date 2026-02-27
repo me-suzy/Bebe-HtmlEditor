@@ -77,14 +77,42 @@ Modificările sunt sincronizate în ambele direcții:
 
 ## Capturi de ecran
 
-În acest folder sunt incluse 2 capturi de ecran ale aplicației:
+În acest folder sunt incluse 2 capturi de ecran ale aplicației (fișierele `.png` pe care le-ai salvat).
+Le poți păstra în repo pentru a ilustra modul de funcționare al editorului.
 
-- `Imagine 1 Open.png` – vedere generală cu panoul Cod + Design deschise.
-- `Imagine 2 inside.png` – exemplu de editare în panoul Design, cu panoul de proprietăți vizibil.
+---
 
-În README sunt afișate astfel:
+## Instructiuni pentru urcarea pe GitHub
 
-```markdown
-![HTML Editor – panou Cod + Design](Imagine 1 Open.png)
-![HTML Editor – editare în Design](Imagine 2 inside.png)
-```
+1. Creează un **Personal Access Token** nou pe GitHub (Settings → Developer settings → Personal access tokens) cu permisiunea `repo`.
+2. În PowerShell, poți salva datele astfel:
+
+   ```powershell
+   setx GITHUB_USERNAME "me-suzy"
+   setx GITHUB_TOKEN "TOKENUL_TAU_NOU"
+   ```
+
+3. Închide și redeschide PowerShell.
+
+4. Din acest folder, rulează:
+
+   ```powershell
+   python upload_to_github.py
+   ```
+
+5. Scriptul va:
+   - crea un repository nou pe GitHub în contul tău,
+   - inițializa git în acest folder (dacă nu există deja),
+   - face commit cu toate fișierele,
+   - face push pe ramura `main`.
+
+La final, scriptul îți va afișa URL-ul repo-ului GitHub.
+
+---
+
+## Planuri posibile de extindere
+
+- Butoane pentru inserare rapidă de elemente HTML (paragraf, titluri, imagini, liste).
+- Istoric de fișiere recent deschise.
+- Configurare vizuală pentru culorile editorului și temă dark/light.
+
