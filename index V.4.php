@@ -1200,7 +1200,8 @@ if (isset($_GET['action'])) {
 <body>
     <!-- Save Confirm Dialog -->
     <div id="saveConfirmOverlay"
-        style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;align-items:center;justify-content:center">
+        style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;align-items:center;justify-content:center"
+        onkeydown="if(event.key==='Escape' && _saveConfirmResolve) _saveConfirmResolve('cancel');">
         <div
             style="background:#252633;border:1px solid #3b82f6;border-radius:10px;padding:24px 30px;max-width:420px;color:#eaeaea;font-size:15px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.5)">
             <div id="saveConfirmMsg" style="margin-bottom:20px;line-height:1.5"></div>
@@ -1209,6 +1210,8 @@ if (isset($_GET['action'])) {
                     style="padding:8px 20px;background:#3b82f6;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:14px">Salveaza</button>
                 <button onclick="_saveConfirmResolve('no')"
                     style="padding:8px 20px;background:#ef4444;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:14px">Nu</button>
+                <button onclick="_saveConfirmResolve('cancel')"
+                    style="padding:8px 20px;background:#4b5563;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:14px">Cancel</button>
             </div>
         </div>
     </div>
@@ -1390,6 +1393,8 @@ if (isset($_GET['action'])) {
         let designRedoStack = [];
         let lastDesignSnapshot = null;
         let designSnapshotTimer = null;
+        let designCleanCode = null; // exact editor code when design undo stack was initialized
+        let designCleanBodyHtml = null; // initial browser-serialized body innerHTML for dirty comparison
 
         // ===== MULTI-TAB SYSTEM =====
         let tabs = [];
@@ -1418,7 +1423,8 @@ if (isset($_GET['action'])) {
                 lastPreviewHadBody: opts.lastPreviewHadBody || false,
                 designUndoStack: [],
                 designRedoStack: [],
-                lastDesignSnapshot: null
+                lastDesignSnapshot: null,
+                designCleanBodyHtml: null
             };
         }
 
@@ -1548,6 +1554,7 @@ if (isset($_GET['action'])) {
             tab.designUndoStack = designUndoStack.slice();
             tab.designRedoStack = designRedoStack.slice();
             tab.lastDesignSnapshot = lastDesignSnapshot;
+            tab.designCleanBodyHtml = designCleanBodyHtml;
         }
 
         function restoreTabState(tab) {
@@ -1558,6 +1565,7 @@ if (isset($_GET['action'])) {
             designUndoStack = tab.designUndoStack.slice();
             designRedoStack = tab.designRedoStack.slice();
             lastDesignSnapshot = tab.lastDesignSnapshot;
+            designCleanBodyHtml = tab.designCleanBodyHtml;
 
             // Suppress change-triggered preview updates during restore
             isSyncFromDesign = true;
@@ -1757,7 +1765,15 @@ if (isset($_GET['action'])) {
         function getDesignBodyHtml() {
             const iframe = document.getElementById('preview');
             const doc = iframe && iframe.contentDocument;
-            return (doc && doc.body) ? doc.body.innerHTML : null;
+            if (!doc || !doc.body) return null;
+            // Strip CROP highlight styles before reading so snapshots are always clean
+            if (cropHighlightActive) {
+                clearSasaDesignHighlight(doc);
+                const html = doc.body.innerHTML;
+                highlightSasaInDesign('crop');
+                return html;
+            }
+            return doc.body.innerHTML;
         }
 
         // Push current body state into the undo stack.
@@ -1801,6 +1817,8 @@ if (isset($_GET['action'])) {
             designUndoStack = [];
             designRedoStack = [];
             lastDesignSnapshot = getDesignBodyHtml();
+            designCleanBodyHtml = lastDesignSnapshot; // save initial body for dirty comparison
+            designCleanCode = editor ? editor.getValue() : null;
             if (designSnapshotTimer) clearInterval(designSnapshotTimer);
             // Periodically save snapshots while the user types in design, so each
             // undo step covers ~500ms of keystroke activity.
@@ -1987,8 +2005,8 @@ if (isset($_GET['action'])) {
             // Activate SASA for ALL view modes — including design.
             sasaSelectionActive = true;
             document.getElementById('btnSelectSasa').classList.add('active');
-            // Visual highlight in design panel
-            highlightSasaInDesign();
+            // Visual highlight in design panel (SELECT mode — only between SASA markers)
+            highlightSasaInDesign('select');
             // Focus the right panel
             if (viewMode === 'design') {
                 const iframe = document.getElementById('preview');
@@ -2022,7 +2040,7 @@ if (isset($_GET['action'])) {
             // Visual highlight only — no code selection, no SASA activation
             cropHighlightActive = true;
             document.getElementById('btnCropSasa').classList.add('active');
-            highlightSasaInDesign();
+            highlightSasaInDesign('crop');
             // In code/split mode, scroll to show the SASA region (but don't select)
             if (viewMode !== 'design') {
                 editor.scrollIntoView({ from: range.from, to: range.to }, 60);
@@ -2037,8 +2055,10 @@ if (isset($_GET['action'])) {
         }
 
         // Add background highlight to design content between SASA markers (visual only).
+        // mode='select' — only highlights between SASA-1 and SASA-2
+        // mode='crop'   — also highlights h1.den_articol and td.text_dreapta
         // Focus handling is done by selectSasaRegion(), not here.
-        function highlightSasaInDesign() {
+        function highlightSasaInDesign(mode) {
             const iframe = document.getElementById('preview');
             if (!iframe) return;
             const doc = iframe.contentDocument;
@@ -2065,18 +2085,19 @@ if (isset($_GET['action'])) {
                 }
                 current = current.nextSibling;
             }
-            // Also highlight h1.den_articol elements
-            doc.querySelectorAll('h1.den_articol').forEach(h1 => {
-                h1.setAttribute('data-sasa-highlight', '1');
-                h1.style.outline = '2px solid #3b82f6';
-                h1.style.backgroundColor = 'rgba(59,130,246,0.12)';
-            });
-            // Also highlight td.text_dreapta (date/category line)
-            doc.querySelectorAll('td.text_dreapta').forEach(td => {
-                td.setAttribute('data-sasa-highlight', '1');
-                td.style.outline = '2px solid #3b82f6';
-                td.style.backgroundColor = 'rgba(59,130,246,0.12)';
-            });
+            // CROP mode: also highlight h1.den_articol and td.text_dreapta
+            if (mode === 'crop') {
+                doc.querySelectorAll('h1.den_articol').forEach(h1 => {
+                    h1.setAttribute('data-sasa-highlight', '1');
+                    h1.style.outline = '2px solid #3b82f6';
+                    h1.style.backgroundColor = 'rgba(59,130,246,0.12)';
+                });
+                doc.querySelectorAll('td.text_dreapta').forEach(td => {
+                    td.setAttribute('data-sasa-highlight', '1');
+                    td.style.outline = '2px solid #3b82f6';
+                    td.style.backgroundColor = 'rgba(59,130,246,0.12)';
+                });
+            }
         }
 
         function clearSasaDesignHighlight(doc) {
@@ -2439,6 +2460,8 @@ if (isset($_GET['action'])) {
                 change.cancel();
                 const range = getSasaRange();
                 if (!range) { deactivateSasa(); return; }
+                // Save the current design state to undo stack BEFORE the SASA edit
+                designSaveSnapshot();
                 const rawText = (o === '+delete' || o === 'cut') ? '' : change.text.join('\n');
                 // Wrap typed/pasted text in <p class="text_obisnuit"><em>…</em></p>
                 const insertText = rawText.length > 0 ? wrapTextForSasa(rawText) : '';
@@ -2662,62 +2685,65 @@ if (isset($_GET['action'])) {
             const sel = document.getElementById('propClass');
             if (!sel) return;
             sel.innerHTML = '<option value=\"\">(fara)</option>';
-
-            const iframe = document.getElementById('preview');
-            const doc = iframe && iframe.contentDocument;
-            const win = iframe && iframe.contentWindow;
-            let hiddenSpan = null;
-            let defaultBg = '#ffffff';
-
-            if (doc && doc.body && win) {
-                hiddenSpan = doc.createElement('span');
-                hiddenSpan.style.visibility = 'hidden';
-                hiddenSpan.style.position = 'absolute';
-                hiddenSpan.style.whiteSpace = 'nowrap';
-                hiddenSpan.innerHTML = 'Test';
-                doc.body.appendChild(hiddenSpan);
-
-                const bodyComp = win.getComputedStyle(doc.body);
-                if (bodyComp && bodyComp.backgroundColor && bodyComp.backgroundColor !== 'rgba(0, 0, 0, 0)' && bodyComp.backgroundColor !== 'transparent') {
-                    defaultBg = bodyComp.backgroundColor;
-                }
-            }
-
             cssClasses.forEach(c => {
                 const opt = document.createElement('option');
                 opt.value = c;
                 opt.textContent = c;
-
-                if (hiddenSpan && win) {
-                    hiddenSpan.className = c;
-                    const comp = win.getComputedStyle(hiddenSpan);
-                    if (comp) {
-                        opt.style.backgroundColor = defaultBg;
-
-                        if (comp.color && comp.color !== 'rgba(0, 0, 0, 0)' && comp.color !== 'transparent') {
-                            opt.style.color = comp.color;
-                        } else {
-                            opt.style.color = '#000000';
-                        }
-
-                        if (comp.fontSize) {
-                            opt.style.fontSize = comp.fontSize;
-                        }
-                        if (comp.fontWeight) {
-                            opt.style.fontWeight = comp.fontWeight;
-                        }
-                        if (comp.backgroundColor && comp.backgroundColor !== 'rgba(0, 0, 0, 0)' && comp.backgroundColor !== 'transparent') {
-                            opt.style.backgroundColor = comp.backgroundColor;
-                        }
-                    }
-                }
-
                 sel.appendChild(opt);
             });
+        }
 
-            if (hiddenSpan && hiddenSpan.parentNode) {
-                hiddenSpan.parentNode.removeChild(hiddenSpan);
+        // Style the class combo options with colors/sizes from the CSS in the preview iframe.
+        // Called ONLY after preview is fully loaded (from makeDesignEditable), never during
+        // undo/redo/sync flows, to avoid manipulating the iframe body at unsafe times.
+        function styleClassOptions() {
+            const sel = document.getElementById('propClass');
+            if (!sel) return;
+            const iframe = document.getElementById('preview');
+            const doc = iframe && iframe.contentDocument;
+            const win = iframe && iframe.contentWindow;
+            if (!doc || !doc.body || !win) return;
+
+            let hiddenSpan = doc.createElement('span');
+            hiddenSpan.style.visibility = 'hidden';
+            hiddenSpan.style.position = 'absolute';
+            hiddenSpan.style.whiteSpace = 'nowrap';
+            hiddenSpan.innerHTML = 'Test';
+            doc.body.appendChild(hiddenSpan);
+
+            let defaultBg = '#ffffff';
+            const bodyComp = win.getComputedStyle(doc.body);
+            if (bodyComp && bodyComp.backgroundColor && bodyComp.backgroundColor !== 'rgba(0, 0, 0, 0)' && bodyComp.backgroundColor !== 'transparent') {
+                defaultBg = bodyComp.backgroundColor;
             }
+
+            // Style each <option> in the combo
+            const options = sel.querySelectorAll('option');
+            for (let i = 0; i < options.length; i++) {
+                const opt = options[i];
+                if (!opt.value) continue; // skip "(fara)"
+                hiddenSpan.className = opt.value;
+                const comp = win.getComputedStyle(hiddenSpan);
+                if (comp) {
+                    opt.style.backgroundColor = defaultBg;
+                    if (comp.color && comp.color !== 'rgba(0, 0, 0, 0)' && comp.color !== 'transparent') {
+                        opt.style.color = comp.color;
+                    } else {
+                        opt.style.color = '#000000';
+                    }
+                    if (comp.fontSize) {
+                        opt.style.fontSize = comp.fontSize;
+                    }
+                    if (comp.fontWeight) {
+                        opt.style.fontWeight = comp.fontWeight;
+                    }
+                    if (comp.backgroundColor && comp.backgroundColor !== 'rgba(0, 0, 0, 0)' && comp.backgroundColor !== 'transparent') {
+                        opt.style.backgroundColor = comp.backgroundColor;
+                    }
+                }
+            }
+
+            hiddenSpan.parentNode.removeChild(hiddenSpan);
         }
 
         async function refreshList(dir) {
@@ -2887,16 +2913,36 @@ if (isset($_GET['action'])) {
             // Replace &nbsp; with regular space in SASA region and h1.den_articol
             const newBody = '<body' + bodyMatch[1] + '>' + cleanNbspInHtml(doc.body.innerHTML) + '</body>';
             // Only update code if the body actually changed (avoids false dirty on select/copy)
-            if (newBody === bodyMatch[0]) return;
+            if (newBody === bodyMatch[0]) {
+                // Re-apply CROP highlight (we cleared it above for clean reading)
+                if (cropHighlightActive) highlightSasaInDesign('crop');
+                return;
+            }
             isSyncFromDesign = true;
             const from = editor.posFromIndex(bodyMatch.index);
             const to = editor.posFromIndex(bodyMatch.index + bodyMatch[0].length);
             editor.replaceRange(newBody, from, to);
             isSyncFromDesign = false;
-            isDirty = true;
+            // Recalculate dirty state by comparing to originalContent
+            // (so that undoing all changes correctly clears the dirty star)
+            if (activeTabId) {
+                var _t = null;
+                for (var _i = 0; _i < tabs.length; _i++) { if (tabs[_i].id === activeTabId) { _t = tabs[_i]; break; } }
+                if (_t) {
+                    var nowDirty = (normalizeHtmlForCompare(editor.getValue()) !== _t.originalContentNorm);
+                    _t.isDirty = nowDirty;
+                    isDirty = nowDirty;
+                    var _el = document.querySelector('.editor-tab[data-tab-id="' + activeTabId + '"]');
+                    if (_el) { if (nowDirty) _el.classList.add('dirty'); else _el.classList.remove('dirty'); }
+                } else {
+                    isDirty = true;
+                }
+            } else {
+                isDirty = true;
+            }
             syncSelectionToCodeFromDesign();
             // Re-apply CROP highlight visually (it was just stripped for clean sync)
-            if (cropHighlightActive) highlightSasaInDesign();
+            if (cropHighlightActive) highlightSasaInDesign('crop');
         }
 
         function makeDesignEditable() {
@@ -3004,6 +3050,8 @@ if (isset($_GET['action'])) {
                         const doSasaEdit = (rawText) => {
                             const range = getSasaRange();
                             if (!range) { deactivateSasa(); return; }
+                            // Save the current design state to undo stack BEFORE the SASA edit
+                            designSaveSnapshot();
                             // Wrap typed/pasted text in <p class="text_obisnuit"><em>…</em></p>
                             const insertText = rawText.length > 0 ? wrapTextForSasa(rawText) : '';
                             sasaSelectionActive = false;
@@ -3084,8 +3132,11 @@ if (isset($_GET['action'])) {
                 }
             }, true);
             // Re-apply CROP highlight after iframe reload (if active)
-            if (cropHighlightActive) highlightSasaInDesign();
+            if (cropHighlightActive) highlightSasaInDesign('crop');
+            // Populate class list and apply CSS styling to combo options
+            // (safe here because iframe is stable and fully loaded)
             refreshClassListFromCode();
+            styleClassOptions();
         }
 
         function cancelPreviewUpdateForUndoRedo() {
@@ -3119,7 +3170,7 @@ if (isset($_GET['action'])) {
             isSyncFromCode = false;
             isApplyingUndoRedo = false;
             // Re-apply CROP highlight if active (innerHTML rebuild destroys styles)
-            if (cropHighlightActive) highlightSasaInDesign();
+            if (cropHighlightActive) highlightSasaInDesign('crop');
         }
 
         function doUndoFromDesign() {
@@ -3148,8 +3199,59 @@ if (isset($_GET['action'])) {
             if (win) win.scrollTo(sx, sy);
             isSyncFromCode = false;
             isApplyingUndoRedo = false;
-            // Sync the reverted body back to the code editor
-            syncFromDesign();
+            // Sync the reverted body back to the code editor.
+            // If the undo stack is now empty, we're back at the initial state.
+            // Restore the exact original code (designCleanCode) instead of using
+            // syncFromDesign, because the browser serializes innerHTML differently
+            // from the original source, which would make the dirty check fail.
+            if (designUndoStack.length === 0 && designCleanCode !== null) {
+                // We've undone ALL design changes — restore exact original code.
+                // Use setValue for guaranteed exact restoration (replaceRange can have
+                // subtle trailing-newline issues that prevent content from matching).
+                isSyncFromDesign = true;
+                _isRestoringTab = true;
+                editor.setValue(designCleanCode);
+                _isRestoringTab = false;
+                isSyncFromDesign = false;
+                // Force dirty=false: designCleanCode was captured at file load time,
+                // so restoring it means the file is at its original saved state.
+                isDirty = false;
+                if (activeTabId) {
+                    for (var _i = 0; _i < tabs.length; _i++) {
+                        if (tabs[_i].id === activeTabId) {
+                            tabs[_i].isDirty = false;
+                            break;
+                        }
+                    }
+                }
+                renderTabs();
+            } else {
+                syncFromDesign();
+                // Check if body matches the initial browser-serialized state
+                // (handles cases where the stack didn't fully empty but content is back to original)
+                if (designCleanBodyHtml !== null && designCleanCode !== null) {
+                    const currentBody = getDesignBodyHtml();
+                    if (currentBody === designCleanBodyHtml) {
+                        isSyncFromDesign = true;
+                        _isRestoringTab = true;
+                        editor.setValue(designCleanCode);
+                        _isRestoringTab = false;
+                        isSyncFromDesign = false;
+                        isDirty = false;
+                        if (activeTabId) {
+                            for (var _i2 = 0; _i2 < tabs.length; _i2++) {
+                                if (tabs[_i2].id === activeTabId) {
+                                    tabs[_i2].isDirty = false;
+                                    break;
+                                }
+                            }
+                        }
+                        renderTabs();
+                    }
+                }
+            }
+            // Re-apply CROP highlight after undo (innerHTML rebuild destroys styles)
+            if (cropHighlightActive) highlightSasaInDesign('crop');
             focusDesignPanel(iframe);
         }
 
@@ -3181,6 +3283,31 @@ if (isset($_GET['action'])) {
             isApplyingUndoRedo = false;
             // Sync the redo-applied body back to the code editor
             syncFromDesign();
+            // Force dirty state recalculation and tab update after redo
+            if (activeTabId) {
+                var _t = null;
+                for (var _i = 0; _i < tabs.length; _i++) { if (tabs[_i].id === activeTabId) { _t = tabs[_i]; break; } }
+                if (_t) {
+                    var nowDirty = (normalizeHtmlForCompare(editor.getValue()) !== _t.originalContentNorm);
+                    // Also check against initial browser-serialized body
+                    if (nowDirty && designCleanBodyHtml !== null && designCleanCode !== null) {
+                        const currentBody = getDesignBodyHtml();
+                        if (currentBody === designCleanBodyHtml) {
+                            isSyncFromDesign = true;
+                            _isRestoringTab = true;
+                            editor.setValue(designCleanCode);
+                            _isRestoringTab = false;
+                            isSyncFromDesign = false;
+                            nowDirty = false;
+                        }
+                    }
+                    _t.isDirty = nowDirty;
+                    isDirty = nowDirty;
+                    renderTabs();
+                }
+            }
+            // Re-apply CROP highlight after redo (innerHTML rebuild destroys styles)
+            if (cropHighlightActive) highlightSasaInDesign('crop');
             focusDesignPanel(iframe);
         }
 
