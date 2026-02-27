@@ -1494,6 +1494,12 @@ if (isset($_GET['action'])) {
                 }
                 current = current.nextSibling;
             }
+            // Also highlight h1.den_articol elements
+            doc.querySelectorAll('h1.den_articol').forEach(h1 => {
+                h1.setAttribute('data-sasa-highlight', '1');
+                h1.style.outline = '2px solid #3b82f6';
+                h1.style.backgroundColor = 'rgba(59,130,246,0.12)';
+            });
         }
 
         function clearSasaDesignHighlight(doc) {
