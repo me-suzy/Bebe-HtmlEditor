@@ -225,6 +225,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'preview') {
                     . "body { display: block !important; }\n"
                     . "body * { visibility: visible !important; opacity: 1 !important;\n"
                     . "  animation: none !important; transition: none !important; }\n"
+                    . "a img { cursor: pointer !important; }\n"
+                    . "img { cursor: default !important; }\n"
+                    . "a img { cursor: pointer !important; }\n"
                     . "#preloader, .preloader, #loader, .loader, #loader-fade,\n"
                     . ".loading-overlay, .page-loader, .loading-screen,\n"
                     . "#loading-overlay, #page-loading, .site-loader,\n"
@@ -1379,6 +1382,7 @@ if (isset($_GET['action'])) {
         let isSelectionFromDesign = false;
         let isSelectionFromCode = false;
         let syncSelectionMark = null;   // markText handle for yellow selection highlight in code
+        let _imgClickMark = null;       // persistent markText for image/icon click highlight
         let isDirty = false;
         let viewMode = 'split';
         let skipPreviewUpdateUntil = 0;
@@ -1558,7 +1562,7 @@ if (isset($_GET['action'])) {
         }
 
         function restoreTabState(tab) {
-            if (typeof deactivateSasa === 'function' && sasaSelectionActive) deactivateSasa();
+            if (typeof deactivateSasa === 'function') deactivateSasa();
             if (typeof deactivateCrop === 'function' && cropHighlightActive) deactivateCrop();
             _isRestoringTab = true;
             currentFile = tab.filePath;
@@ -1595,7 +1599,7 @@ if (isset($_GET['action'])) {
             if (tabId === activeTabId) return;
             if (typeof flushPendingDesignSync === 'function') flushPendingDesignSync();
             // Deactivate CROP and SELECT modes when switching tabs
-            if (typeof deactivateSasa === 'function' && typeof sasaSelectionActive !== 'undefined' && sasaSelectionActive) deactivateSasa();
+            if (typeof deactivateSasa === 'function') deactivateSasa();
             if (typeof deactivateCrop === 'function' && typeof cropHighlightActive !== 'undefined' && cropHighlightActive) deactivateCrop();
             saveCurrentTabState();
             activeTabId = tabId;
@@ -1652,7 +1656,7 @@ if (isset($_GET['action'])) {
                 designUndoStack = [];
                 designRedoStack = [];
                 lastDesignSnapshot = null;
-                if (typeof deactivateSasa === 'function' && sasaSelectionActive) deactivateSasa();
+                if (typeof deactivateSasa === 'function') deactivateSasa();
                 if (typeof deactivateCrop === 'function' && cropHighlightActive) deactivateCrop();
                 removeAllBackups();
                 showOverlay();
@@ -1673,7 +1677,7 @@ if (isset($_GET['action'])) {
             if (activeTabId) {
                 closeTab(activeTabId);
             } else {
-                if (typeof deactivateSasa === 'function' && sasaSelectionActive) deactivateSasa();
+                if (typeof deactivateSasa === 'function') deactivateSasa();
                 if (typeof deactivateCrop === 'function' && cropHighlightActive) deactivateCrop();
                 hideOverlay(); // just to be safe, though showOverlay is more likely
                 showOverlay();
@@ -1682,7 +1686,7 @@ if (isset($_GET['action'])) {
 
         function onNewTabClick() {
             saveCurrentTabState();
-            if (typeof deactivateSasa === 'function' && sasaSelectionActive) deactivateSasa();
+            if (typeof deactivateSasa === 'function') deactivateSasa();
             if (typeof deactivateCrop === 'function' && cropHighlightActive) deactivateCrop();
             showOverlay();
         }
@@ -1844,7 +1848,7 @@ if (isset($_GET['action'])) {
             // Periodically save snapshots while the user types in design, so each
             // undo step covers ~500ms of keystroke activity.
             designSnapshotTimer = setInterval(() => {
-                if (!isApplyingUndoRedo && !isSyncFromCode) {
+                if (!isApplyingUndoRedo && !isSyncFromCode && !sasaSelectionActive && !cropHighlightActive) {
                     designSaveSnapshot();
                 }
             }, 500);
@@ -2156,7 +2160,6 @@ if (isset($_GET['action'])) {
 
         // Clear SASA state when user clicks elsewhere or edits
         function deactivateSasa() {
-            if (!sasaSelectionActive) return;
             sasaSelectionActive = false;
             document.getElementById('btnSelectSasa').classList.remove('active');
             clearSasaDesignHighlight();
@@ -2481,13 +2484,15 @@ if (isset($_GET['action'])) {
                 change.cancel();
                 const range = getSasaRange();
                 if (!range) { deactivateSasa(); return; }
+                // Strip SASA visual highlights from DOM BEFORE saving snapshot
+                // so that undo states never contain highlight artefacts.
+                clearSasaDesignHighlight();
                 // Save the current design state to undo stack BEFORE the SASA edit
                 designSaveSnapshot();
                 const rawText = (o === '+delete' || o === 'cut') ? '' : change.text.join('\n');
                 // Wrap typed/pasted text in <p class="text_obisnuit"><em>…</em></p>
                 const insertText = rawText.length > 0 ? wrapTextForSasa(rawText) : '';
-                sasaSelectionActive = false;
-                clearSasaDesignHighlight();
+                deactivateSasa();
                 isSyncFromDesign = true;
                 editor.operation(() => {
                     editor.replaceRange(insertText, range.from, range.to);
@@ -2525,6 +2530,8 @@ if (isset($_GET['action'])) {
             });
 
             editor.on('change', () => {
+                // Clear design-click highlight when user edits in code
+                if (_imgClickMark) { _imgClickMark.clear(); _imgClickMark = null; }
                 refreshClassListFromCode();
                 // Skip dirty recalculation during tab restore — the tab already has correct isDirty
                 if (!_isRestoringTab && activeTabId) {
@@ -2574,7 +2581,11 @@ if (isset($_GET['action'])) {
             });
 
             let _isCodeDragging = false;
-            editor.getWrapperElement().addEventListener('mousedown', () => { _isCodeDragging = true; });
+            editor.getWrapperElement().addEventListener('mousedown', () => {
+                _isCodeDragging = true;
+                // Clear persistent image/icon highlight when user clicks in code
+                if (_imgClickMark) { _imgClickMark.clear(); _imgClickMark = null; }
+            });
             window.addEventListener('mouseup', () => {
                 if (_isCodeDragging) {
                     _isCodeDragging = false;
@@ -2588,6 +2599,9 @@ if (isset($_GET['action'])) {
                 if (isSelectionFromDesign) return;
                 if (isSyncFromDesign) return;
                 if (isApplyingUndoRedo) return;
+                // Always clear design-click highlights when user moves cursor in code
+                if (syncSelectionMark) { syncSelectionMark.clear(); syncSelectionMark = null; }
+                if (_imgClickMark) { _imgClickMark.clear(); _imgClickMark = null; }
                 // Daca cursorul este in interiorul zonei SASA, nu incercam sa facem
                 // „sync selection” catre Design (altfel se comporta ca un FIND si sare).
                 if (isCursorInsideSasa()) return;
@@ -2596,8 +2610,6 @@ if (isset($_GET['action'])) {
                 // selectSasaRegion() fires cursorActivity BEFORE sasaSelectionActive
                 // is set to true, so this won't interfere with the initial selection).
                 if (sasaSelectionActive) deactivateSasa();
-                // Clear the yellow selection mark when the user moves the cursor in code
-                if (syncSelectionMark) { syncSelectionMark.clear(); syncSelectionMark = null; }
                 // In afara zonei SASA putem sincroniza selectia spre Design.
                 // IMPORTANT: Nu sincronizam cat timp user-ul tine click apasat 
                 // pentru a trage o selectie in mod cursiv, altfel scroll-ul 
@@ -2852,7 +2864,7 @@ if (isset($_GET['action'])) {
                 if (!data.ok) { toast('Eroare: ' + data.error); return; }
 
                 // Deactivate CROP and SELECT modes when opening a new file
-                if (typeof deactivateSasa === 'function' && typeof sasaSelectionActive !== 'undefined' && sasaSelectionActive) deactivateSasa();
+                if (typeof deactivateSasa === 'function') deactivateSasa();
                 if (typeof deactivateCrop === 'function' && typeof cropHighlightActive !== 'undefined' && cropHighlightActive) deactivateCrop();
 
                 // Save current tab state before creating new one
@@ -3041,6 +3053,8 @@ if (isset($_GET['action'])) {
             doc.body.addEventListener('input', () => {
                 if (isApplyingUndoRedo) return;
                 if (_suppressInputAfterCopy) return;
+                // Clear design-click highlight when user edits in design
+                if (_imgClickMark) { _imgClickMark.clear(); _imgClickMark = null; }
                 clearTimeout(designInputDebounceTimer);
                 designInputDebounceTimer = setTimeout(syncFromDesign, 80);
             });
@@ -3077,24 +3091,52 @@ if (isset($_GET['action'])) {
             });
             doc.addEventListener('mouseup', updatePropertiesPanelFromSelection);
             doc.addEventListener('keyup', updatePropertiesPanelFromSelection);
-            // Prevent link navigation; sync images and anchors to code on click
+            // ── Intercept mousedown on images inside anchors so we can
+            //    select the <img> before the browser's default behaviour. ──
+            doc.addEventListener('mousedown', e => {
+                const target = e.target;
+                if (!target || target.tagName !== 'IMG') return;
+                const anchor = target.closest ? target.closest('a') : null;
+                if (!anchor) return;
+                // Prevent the browser's default mousedown on the anchor (which
+                // would place the caret in the surrounding text, not on the image).
+                e.preventDefault();
+                e.stopPropagation();
+                // Manually select the <img> element
+                const iframeWin = document.getElementById('preview').contentWindow;
+                try {
+                    const r = doc.createRange();
+                    r.selectNode(target);
+                    const s = iframeWin.getSelection();
+                    s.removeAllRanges();
+                    s.addRange(r);
+                } catch (_) {}
+                // Sync to code editor immediately
+                if (typeof syncClickedElementToCode === 'function') syncClickedElementToCode(target);
+                // Delay properties update slightly so the selection settles
+                setTimeout(updatePropertiesPanelFromSelection, 10);
+            }, true);
+            // Prevent link navigation on click; handle non-anchor clicks
             doc.addEventListener('click', e => {
                 const target = e.target;
                 if (!target || target === doc.body) return;
+                const anchor = target.closest ? target.closest('a') : (target.tagName === 'A' ? target : null);
+                if (anchor) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Images inside anchors are fully handled by the mousedown handler;
+                    // for text links, sync the clicked element to code here.
+                    if (target.tagName !== 'IMG') {
+                        if (typeof syncClickedElementToCode === 'function') syncClickedElementToCode(target);
+                    }
+                    return;
+                }
                 // If the user has drag-selected text, don't override the selection
                 // with a cursor-only sync. The selectionchange/mouseup handlers already
                 // highlighted the selected text in the code editor.
                 const iframeWin = document.getElementById('preview').contentWindow;
                 const curSel = iframeWin && iframeWin.getSelection();
                 if (curSel && !curSel.isCollapsed) return;
-                const anchor = target.closest ? target.closest('a') : (target.tagName === 'A' ? target : null);
-                if (anchor) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    // Sync to the actual clicked element (e.g. <img> inside <a>), not the anchor wrapper
-                    if (typeof syncClickedElementToCode === 'function') syncClickedElementToCode(target);
-                    return;
-                }
                 // Sync any clicked element to its position in the source code
                 if (typeof syncClickedElementToCode === 'function') syncClickedElementToCode(target);
             }, true);
@@ -3114,12 +3156,13 @@ if (isset($_GET['action'])) {
                         const doSasaEdit = (rawText) => {
                             const range = getSasaRange();
                             if (!range) { deactivateSasa(); return; }
+                            // Strip SASA visual highlights from DOM BEFORE saving snapshot
+                            clearSasaDesignHighlight(doc);
                             // Save the current design state to undo stack BEFORE the SASA edit
                             designSaveSnapshot();
                             // Wrap typed/pasted text in <p class="text_obisnuit"><em>…</em></p>
                             const insertText = rawText.length > 0 ? wrapTextForSasa(rawText) : '';
-                            sasaSelectionActive = false;
-                            clearSasaDesignHighlight(doc);
+                            deactivateSasa();
                             isSyncFromDesign = true;
                             editor.replaceRange(insertText, range.from, range.to);
                             isSyncFromDesign = false;
@@ -3493,6 +3536,8 @@ if (isset($_GET['action'])) {
                 + 'body{display:block!important}'
                 + 'body *{visibility:visible!important;opacity:1!important;'
                 + 'animation:none!important;transition:none!important}'
+                + 'img{cursor:default!important}'
+                + 'a img{cursor:pointer!important}'
                 + '#preloader,.preloader,#loader,.loader,#loader-fade,'
                 + '.loading-overlay,.page-loader,.loading-screen,'
                 + '#loading-overlay,#page-loading,.site-loader,'
@@ -3552,11 +3597,19 @@ if (isset($_GET['action'])) {
             if (!win || !doc) return null;
             const sel = win.getSelection();
             if (!sel || sel.rangeCount === 0) return null;
+            // Check if exactly one element node is selected (e.g. an <img> via selectNode)
+            const range = sel.getRangeAt(0);
+            if (range && range.startContainer === range.endContainer
+                && range.startContainer.nodeType === 1
+                && range.endOffset - range.startOffset === 1) {
+                const child = range.startContainer.childNodes[range.startOffset];
+                if (child && child.nodeType === 1 && child.tagName === 'IMG') return child;
+            }
             let node = sel.anchorNode;
             if (!node) return null;
             if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
             if (!node || !node.closest) return node;
-            return node.closest('p, span, div, td, th, li, h1, h2, h3, h4, h5, h6, a, strong, em');
+            return node.closest('img, p, span, div, td, th, li, h1, h2, h3, h4, h5, h6, a, strong, em');
         }
 
         function getDesignSelectionRange() {
@@ -3921,17 +3974,48 @@ if (isset($_GET['action'])) {
             }
 
             if (idx !== -1) {
-                const globalIdx = bodyStartIdx + idx;
-                const from = editor.posFromIndex(globalIdx);
-                // Clear any previous text-selection highlight before setting cursor
+                let highlightStartIdx = bodyStartIdx + idx;
+                let highlightEndIdx = highlightStartIdx;
+                const srcAfter = src.substring(highlightStartIdx);
+                // Determine highlight range: just the specific tag, not the whole line.
+                if (tagName === 'img') {
+                    // Check if <img> is wrapped in <a> — highlight the <a>…</a> block
+                    const parentA = el.parentElement;
+                    if (parentA && parentA.tagName === 'A') {
+                        const hrefAttr = parentA.getAttribute('href') || '';
+                        if (hrefAttr) {
+                            const esc = hrefAttr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                            const aMatch = new RegExp('<a\\b[^>]*\\bhref=["\']?' + esc + '[^>]*>[\\s\\S]*?</a>', 'i').exec(src.substring(bodyStartIdx));
+                            if (aMatch) {
+                                highlightStartIdx = bodyStartIdx + aMatch.index;
+                                highlightEndIdx = highlightStartIdx + aMatch[0].length;
+                            } else {
+                                const imgClose = srcAfter.indexOf('>');
+                                highlightEndIdx = highlightStartIdx + (imgClose !== -1 ? imgClose + 1 : 50);
+                            }
+                        } else {
+                            const imgClose = srcAfter.indexOf('>');
+                            highlightEndIdx = highlightStartIdx + (imgClose !== -1 ? imgClose + 1 : 50);
+                        }
+                    } else {
+                        const imgClose = srcAfter.indexOf('>');
+                        highlightEndIdx = highlightStartIdx + (imgClose !== -1 ? imgClose + 1 : 50);
+                    }
+                } else {
+                    const closeTag = srcAfter.indexOf('>');
+                    highlightEndIdx = highlightStartIdx + (closeTag !== -1 ? closeTag + 1 : 50);
+                }
+                const from = editor.posFromIndex(highlightStartIdx);
+                const to = editor.posFromIndex(highlightEndIdx);
+                // Clear any previous highlights before setting cursor
                 if (syncSelectionMark) { syncSelectionMark.clear(); syncSelectionMark = null; }
+                if (_imgClickMark) { _imgClickMark.clear(); _imgClickMark = null; }
                 isSelectionFromDesign = true;
                 editor.setCursor(from);
                 editor.scrollIntoView(from, 100);
                 isSelectionFromDesign = false;
-                // Flash the line yellow to give clear visual feedback
-                const lh = editor.addLineClass(from.line, 'background', 'cm-sync-highlight');
-                setTimeout(() => editor.removeLineClass(lh, 'background', 'cm-sync-highlight'), 900);
+                // Highlight the element — stays until user clicks in code or edits in design
+                _imgClickMark = editor.markText(from, to, { className: 'cm-sync-highlight' });
             }
         }
 
