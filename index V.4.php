@@ -2925,7 +2925,12 @@ if (isset($_GET['action'])) {
                         renderTabs();
                     }
                 }
-                toast('Salvat: ' + currentFile);
+                // Preserve design panel scroll position across the preview reload
+                var _pIframe = document.getElementById('preview');
+                var _pWin = _pIframe && _pIframe.contentWindow;
+                if (_pWin) {
+                    _pendingPreviewScroll = { x: _pWin.scrollX || 0, y: _pWin.scrollY || 0 };
+                }
                 updatePreview();
             } catch (e) {
                 toast('Eroare la salvare');
@@ -3424,6 +3429,9 @@ if (isset($_GET['action'])) {
         // all external CSS/fonts finish loading (which can take 30+ seconds).
         window.__previewDOMReady = null;
 
+        // When set, updatePreview will restore this scroll position after reload.
+        var _pendingPreviewScroll = null;
+
         function updatePreview() {
             const iframe = document.getElementById('preview');
 
@@ -3433,10 +3441,19 @@ if (isset($_GET['action'])) {
             // (blob: URLs have issues with "preferred" stylesheets and encoded paths).
             if (currentFile) {
                 let done = false;
+                const scrollToRestore = _pendingPreviewScroll;
+                _pendingPreviewScroll = null;
                 const doEdit = () => {
                     if (done) return;
                     done = true;
                     if (isCurrentFileHtml()) makeDesignEditable();
+                    if (scrollToRestore && iframe.contentWindow) {
+                        iframe.contentWindow.scrollTo(scrollToRestore.x, scrollToRestore.y);
+                        // Retry after a short delay in case layout shifts from late-loading CSS
+                        setTimeout(() => {
+                            if (iframe.contentWindow) iframe.contentWindow.scrollTo(scrollToRestore.x, scrollToRestore.y);
+                        }, 50);
+                    }
                 };
                 window.__previewDOMReady = doEdit;
                 iframe.onload = doEdit;
@@ -3503,8 +3520,13 @@ if (isset($_GET['action'])) {
 
             const blob = new Blob([content], { type: 'text/html;charset=utf-8' });
             const url = URL.createObjectURL(blob);
+            const scrollToRestore2 = _pendingPreviewScroll;
+            _pendingPreviewScroll = null;
             iframe.onload = () => {
                 makeDesignEditable();
+                if (scrollToRestore2 && iframe.contentWindow) {
+                    iframe.contentWindow.scrollTo(scrollToRestore2.x, scrollToRestore2.y);
+                }
                 URL.revokeObjectURL(url);
             };
             iframe.src = url;
