@@ -2491,7 +2491,7 @@ if (isset($_GET['action'])) {
             editor.addKeyMap({
                 'Ctrl-A': cm => { cm.replaceSelection('ă'); },
                 'Ctrl-I': cm => { cm.replaceSelection('î'); },
-                'Ctrl-S': cm => { cm.replaceSelection('ṣ'); },
+                'Shift-Ctrl-S': cm => { cm.replaceSelection('ṣ'); },
                 'Alt-T': cm => { cm.replaceSelection('ṭ'); },
                 'Alt-Shift-T': cm => { cm.replaceSelection('Ţ'); },
                 'Alt-S': cm => { cm.replaceSelection('Ş'); },
@@ -2646,9 +2646,7 @@ if (isset($_GET['action'])) {
             });
 
             window.addEventListener('keydown', e => {
-                if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-                    // Skip save when CodeMirror has focus – diacritice keymap handles Ctrl+s
-                    if (editor && editor.hasFocus()) return;
+                if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
                     e.preventDefault();
                     saveFile();
                 }
@@ -2963,13 +2961,9 @@ if (isset($_GET['action'])) {
                         renderTabs();
                     }
                 }
-                // Preserve design panel scroll position across the preview reload
-                var _pIframe = document.getElementById('preview');
-                var _pWin = _pIframe && _pIframe.contentWindow;
-                if (_pWin) {
-                    _pendingPreviewScroll = { x: _pWin.scrollX || 0, y: _pWin.scrollY || 0 };
-                }
-                updatePreview();
+                // Silent save: NO preview reload — avoids page flicker
+                // Preview is already up-to-date (changes are synced live)
+                toast('Salvat!');
             } catch (e) {
                 toast('Eroare la salvare');
             }
@@ -3226,7 +3220,7 @@ if (isset($_GET['action'])) {
                 if (e.ctrlKey && !e.altKey && !e.metaKey) {
                     if (!e.shiftKey && e.key === 'a') _diac = 'ă';
                     else if (!e.shiftKey && e.key === 'i') _diac = 'î';
-                    else if (!e.shiftKey && e.key === 's') _diac = 'ṣ';
+                    else if (e.shiftKey && e.key === 'S') _diac = 'ṣ';
                 } else if (e.altKey && !e.ctrlKey && !e.metaKey) {
                     if (!e.shiftKey && e.key === 't') _diac = 'ṭ';
                     else if (e.shiftKey && e.key === 'T') _diac = 'Ţ';
