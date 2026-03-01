@@ -3016,7 +3016,10 @@ if (isset($_GET['action'])) {
             // Remove CROP highlight from DOM before reading so it never persists to code
             clearSasaDesignHighlight(doc);
             // Replace &nbsp; with regular space in SASA region and h1.den_articol
-            const newBody = '<body' + bodyMatch[1] + '>' + cleanNbspInHtml(doc.body.innerHTML) + '</body>';
+            var rawInner = cleanNbspInHtml(doc.body.innerHTML);
+            // Ensure line breaks between block-level elements (Design outputs them on one line)
+            rawInner = rawInner.replace(/(<\/(?:p|div|h[1-6]|ul|ol|li|table|tr|td|th|thead|tbody|blockquote|section|article|header|footer|nav|aside|figure|figcaption|hr|br|pre|dl|dt|dd)>)(<)/gi, '$1\n$2');
+            const newBody = '<body' + bodyMatch[1] + '>' + rawInner + '</body>';
             // Only update code if the body actually changed (avoids false dirty on select/copy)
             if (newBody === bodyMatch[0]) {
                 // Re-apply CROP highlight (we cleared it above for clean reading)
