@@ -1559,6 +1559,16 @@ if (isset($_GET['action'])) {
             tab.designRedoStack = designRedoStack.slice();
             tab.lastDesignSnapshot = lastDesignSnapshot;
             tab.designCleanBodyHtml = designCleanBodyHtml;
+            // Save preview iframe scroll position (for Design/Split mode)
+            try {
+                var iframe = document.getElementById('preview');
+                if (iframe && iframe.contentWindow) {
+                    tab.previewScroll = {
+                        x: iframe.contentWindow.scrollX || 0,
+                        y: iframe.contentWindow.scrollY || 0
+                    };
+                }
+            } catch(e) { /* cross-origin iframe, ignore */ }
         }
 
         function restoreTabState(tab) {
@@ -1582,17 +1592,33 @@ if (isset($_GET['action'])) {
                 editor.getDoc().clearHistory();
             }
             editor.setCursor(tab.cursorPos);
-            editor.scrollTo(tab.scrollInfo.left, tab.scrollInfo.top);
             isSyncFromDesign = false;
             _isRestoringTab = false;
 
             // Restore view mode
             setViewMode(tab.viewMode);
 
-            // Reload preview
+            // Reload preview (restore iframe scroll via _pendingPreviewScroll)
             clearTimeout(previewDebounceTimer);
             previewDebounceTimer = null;
+            if (tab.previewScroll) {
+                _pendingPreviewScroll = { x: tab.previewScroll.x, y: tab.previewScroll.y };
+            }
             updatePreview();
+
+            // Restore scroll AFTER everything has settled
+            // (setValue + setViewMode + updatePreview all cause re-layout that resets scroll)
+            var savedScroll = tab.scrollInfo;
+            if (savedScroll) {
+                setTimeout(function() {
+                    editor.refresh();
+                    editor.scrollTo(savedScroll.left, savedScroll.top);
+                    // Double-check: sometimes first scrollTo is eaten by pending layout
+                    requestAnimationFrame(function() {
+                        editor.scrollTo(savedScroll.left, savedScroll.top);
+                    });
+                }, 50);
+            }
         }
 
         function switchToTab(tabId) {
