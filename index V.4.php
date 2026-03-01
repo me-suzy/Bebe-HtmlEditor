@@ -599,6 +599,35 @@ if (isset($_GET['action'])) {
             border-color: #3b82f6
         }
 
+        #tabBar.file-drag-over,
+        #tabBarSpacer.file-drag-over {
+            background: rgba(59, 130, 246, 0.15);
+            border-radius: 6px;
+        }
+
+        #tabBar.file-drag-over .tab-new {
+            color: #3b82f6;
+            border-color: #3b82f6;
+            border-style: solid;
+            background: rgba(59, 130, 246, 0.2);
+        }
+
+        #tabBarSpacer.file-drag-over {
+            position: relative;
+        }
+
+        #tabBarSpacer.file-drag-over::after {
+            content: 'Drop fisier aici';
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            color: #3b82f6;
+            font-size: 12px;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+
         .btn {
             padding: 7px 14px;
             border: none;
@@ -1278,7 +1307,7 @@ if (isset($_GET['action'])) {
         <div id="tabBar">
             <div class="editor-tab tab-new" id="tabNew" onclick="onNewTabClick()" title="Deschide fisier nou">+</div>
         </div>
-        <div style="flex:1"></div>
+        <div id="tabBarSpacer" style="flex:1"></div>
         <button class="btn btn-ghost" onclick="closeActiveTab()">Inchide tab</button>
         <button class="btn btn-primary" onclick="saveFile()">Salveaza (Ctrl+S)</button>
     </div>
@@ -4717,6 +4746,68 @@ if (isset($_GET['action'])) {
                     fp.value = '';
                 });
             }
+
+            // Drag-and-drop files onto tab bar area (+ button and empty spacer)
+            (function() {
+                var tabBar = document.getElementById('tabBar');
+                var spacer = document.getElementById('tabBarSpacer');
+                if (!tabBar || !spacer) return;
+
+                var targets = [tabBar, spacer];
+                var dragCounter = {};  // per-element counter to handle child enter/leave
+
+                function hasFiles(e) {
+                    if (e.dataTransfer && e.dataTransfer.types) {
+                        for (var i = 0; i < e.dataTransfer.types.length; i++) {
+                            if (e.dataTransfer.types[i] === 'Files') return true;
+                        }
+                    }
+                    return false;
+                }
+
+                targets.forEach(function(el) {
+                    var id = el.id;
+                    dragCounter[id] = 0;
+
+                    el.addEventListener('dragenter', function(e) {
+                        if (!hasFiles(e)) return;  // ignore tab reorder drags
+                        e.preventDefault();
+                        e.stopPropagation();
+                        dragCounter[id]++;
+                        el.classList.add('file-drag-over');
+                    });
+
+                    el.addEventListener('dragover', function(e) {
+                        if (!hasFiles(e)) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.dataTransfer.dropEffect = 'copy';
+                    });
+
+                    el.addEventListener('dragleave', function(e) {
+                        if (!hasFiles(e)) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        dragCounter[id]--;
+                        if (dragCounter[id] <= 0) {
+                            dragCounter[id] = 0;
+                            el.classList.remove('file-drag-over');
+                        }
+                    });
+
+                    el.addEventListener('drop', function(e) {
+                        if (!hasFiles(e)) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        dragCounter[id] = 0;
+                        el.classList.remove('file-drag-over');
+                        // Also clear sibling highlight
+                        targets.forEach(function(t) { t.classList.remove('file-drag-over'); });
+                        var f = e.dataTransfer.files && e.dataTransfer.files[0];
+                        if (f) handleDropFile(f);
+                    });
+                });
+            })();
 
             // F12: open current file as a local file:// URL in a new browser tab.
             // NOTE: Chrome may block window.open('file://...') from an http:// page.
