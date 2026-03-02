@@ -1364,7 +1364,16 @@ if (isset($_GET['action'])) {
                 </div>
             </div>
             <div id="propertiesPanel" class="properties-panel">
-                <span style="color:#9ca3af;margin-right:8px">Proprietati font:</span>
+                <label>Link:</label><input type="text" id="propLink" placeholder="URL" title="Link href" style="width:140px;padding:2px 5px;border:1px solid #4b5563;border-radius:3px;background:#1e1f26;color:#e5e7eb;font-size:12px">
+                <select id="propLinkTarget" title="Link target" style="padding:2px 3px;border:1px solid #4b5563;border-radius:3px;background:#1e1f26;color:#e5e7eb;font-size:12px">
+                    <option value="">Target</option>
+                    <option value="_blank">_blank</option>
+                    <option value="_new">_new</option>
+                    <option value="_parent">_parent</option>
+                    <option value="_self">_self</option>
+                    <option value="_top">_top</option>
+                </select>
+                <span style="color:#4b5563;margin:0 4px">|</span>
                 <label>Font:</label><select id="propFont">
                     <option value="">(mostenit)</option>
                     <option value="Arial">Arial</option>
@@ -4242,6 +4251,24 @@ if (isset($_GET['action'])) {
                 }
                 classSel.value = cls || '';
             }
+            // Link / Target
+            var linkInp = document.getElementById('propLink');
+            var linkTargetSel = document.getElementById('propLinkTarget');
+            if (linkInp && linkTargetSel) {
+                var anchorEl = null;
+                var _ae = el;
+                while (_ae && _ae.nodeType === 1 && _ae.tagName !== 'BODY') {
+                    if (_ae.tagName === 'A') { anchorEl = _ae; break; }
+                    _ae = _ae.parentElement;
+                }
+                if (anchorEl) {
+                    linkInp.value = anchorEl.getAttribute('href') || '';
+                    linkTargetSel.value = anchorEl.getAttribute('target') || '';
+                } else {
+                    linkInp.value = '';
+                    linkTargetSel.value = '';
+                }
+            }
             if (!isSelectionFromCode) {
                 syncSelectionToCodeFromDesign();
             }
@@ -4281,6 +4308,83 @@ if (isset($_GET['action'])) {
             }
             syncFromDesign();
             // Record the post-change state so the next snapshot won't double-push
+            lastDesignSnapshot = getDesignBodyHtml();
+        }
+
+        function applyLinkProperty() {
+            designPushCurrentState();
+            var linkVal = document.getElementById('propLink').value.trim();
+            var targetVal = document.getElementById('propLinkTarget').value;
+            var el = getDesignSelection();
+            if (!el) return;
+            var iframe = document.getElementById('preview');
+            var iDoc = iframe.contentDocument;
+            var iWin = iframe.contentWindow;
+            // Find existing <a> ancestor
+            var anchorEl = null;
+            var _ae = el;
+            while (_ae && _ae.nodeType === 1 && _ae.tagName !== 'BODY') {
+                if (_ae.tagName === 'A') { anchorEl = _ae; break; }
+                _ae = _ae.parentElement;
+            }
+            // Capture ALL computed font styles BEFORE any DOM change
+            var _origStyles = {};
+            try {
+                var _cs = iWin.getComputedStyle(el);
+                _origStyles.fontSize   = _cs.fontSize;
+                _origStyles.fontStyle  = _cs.fontStyle;
+                _origStyles.fontWeight = _cs.fontWeight;
+                _origStyles.fontFamily = _cs.fontFamily;
+            } catch(e) {}
+            if (linkVal) {
+                if (anchorEl) {
+                    // Update existing anchor
+                    anchorEl.setAttribute('href', linkVal);
+                    if (targetVal) anchorEl.setAttribute('target', targetVal);
+                    else anchorEl.removeAttribute('target');
+                } else {
+                    var sel = iWin.getSelection();
+                    if (sel && sel.rangeCount > 0 && !sel.getRangeAt(0).collapsed) {
+                        // Use execCommand('createLink') — browser creates <a> inside
+                        // existing DOM structure without breaking parent elements
+                        iDoc.execCommand('createLink', false, linkVal);
+                        // Find the newly created <a> and apply preserved styles + target
+                        var newSel = iWin.getSelection();
+                        if (newSel && newSel.rangeCount > 0) {
+                            var node = newSel.anchorNode;
+                            if (node && node.nodeType === 3) node = node.parentElement;
+                            var newAnchor = node && node.closest ? node.closest('a') : null;
+                            if (newAnchor) {
+                                if (targetVal) newAnchor.setAttribute('target', targetVal);
+                                // Force-preserve original font styles on <a> so page
+                                // CSS cannot override italic, bold, size, etc.
+                                if (_origStyles.fontSize)   newAnchor.style.fontSize   = _origStyles.fontSize;
+                                if (_origStyles.fontStyle)  newAnchor.style.fontStyle  = _origStyles.fontStyle;
+                                if (_origStyles.fontWeight) newAnchor.style.fontWeight = _origStyles.fontWeight;
+                                if (_origStyles.fontFamily) newAnchor.style.fontFamily = _origStyles.fontFamily;
+                            }
+                        }
+                    } else if (el.tagName !== 'BODY') {
+                        // No text selected — wrap whole element content
+                        var doc = el.ownerDocument;
+                        var a = doc.createElement('a');
+                        a.setAttribute('href', linkVal);
+                        if (targetVal) a.setAttribute('target', targetVal);
+                        if (_origStyles.fontSize)   a.style.fontSize   = _origStyles.fontSize;
+                        if (_origStyles.fontStyle)  a.style.fontStyle  = _origStyles.fontStyle;
+                        if (_origStyles.fontWeight) a.style.fontWeight = _origStyles.fontWeight;
+                        if (_origStyles.fontFamily) a.style.fontFamily = _origStyles.fontFamily;
+                        while (el.firstChild) a.appendChild(el.firstChild);
+                        el.appendChild(a);
+                    }
+                }
+            } else {
+                // Link cleared — remove <a> wrapper, keep children
+                if (anchorEl) {
+                    iDoc.execCommand('unlink', false, null);
+                }
+            }
+            syncFromDesign();
             lastDesignSnapshot = getDesignBodyHtml();
         }
 
@@ -4843,6 +4947,8 @@ if (isset($_GET['action'])) {
             });
             document.getElementById('propColor').addEventListener('input', () => applyFontProperty('color', document.getElementById('propColor').value));
             document.getElementById('propBg').addEventListener('input', () => applyFontProperty('backgroundColor', document.getElementById('propBg').value));
+            document.getElementById('propLink').addEventListener('change', applyLinkProperty);
+            document.getElementById('propLinkTarget').addEventListener('change', applyLinkProperty);
         });
     </script>
     <script>
