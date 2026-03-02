@@ -212,6 +212,11 @@ if (isset($_GET['action']) && $_GET['action'] === 'preview') {
                 // Neutralise javascript: URLs in href attributes
                 $bodyInner = preg_replace('/\bhref\s*=\s*["\']?\s*javascript\s*:[^"\'>\s]*/i', 'href="#"', $bodyInner);
 
+                // Normalise italic tags: păstrează mereu <em> / </em> în loc de <i> / </i>.
+                // Astfel, când înlocuiești doar textul în interior, numele tag-ului rămâne consecvent.
+                $bodyInner = preg_replace('/<\s*i(\b[^>]*)>/i', '<em$1>', $bodyInner);
+                $bodyInner = preg_replace('/<\s*\/\s*i\s*>/i', '</em>', $bodyInner);
+
                 // DOMContentLoaded notification script (our only injected script)
                 $domReadyScript = '<script>document.addEventListener("DOMContentLoaded",function(){'
                     . 'try{if(window.parent&&window.parent.__previewDOMReady)window.parent.__previewDOMReady();}catch(e){}'
@@ -3013,6 +3018,67 @@ if (isset($_GET['action'])) {
             return n.endsWith('.html') || n.endsWith('.htm');
         }
 
+        // Preserve original tag names when the browser normalises equivalent
+        // inline tags during contentEditable editing (e.g. <i>→<em>, <b>→<strong>).
+        // Compares old body HTML (from code editor) with new innerHTML (from design
+        // panel) and restores the original tag variant wherever the browser swapped it.
+        function preserveEquivTags(oldBodyContent, newBodyContent) {
+            var EQUIV = {'i':'em','em':'i','b':'strong','strong':'b'};
+            // Extract all tags with their positions
+            function extractTags(html) {
+                var result = [];
+                var re = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
+                var m;
+                while ((m = re.exec(html)) !== null) {
+                    result.push({
+                        index: m.index,
+                        length: m[0].length,
+                        closing: m[1] === '/',
+                        name: m[2].toLowerCase(),
+                        attrs: m[3],
+                        raw: m[0]
+                    });
+                }
+                return result;
+            }
+            var oldTags = extractTags(oldBodyContent);
+            var newTags = extractTags(newBodyContent);
+            // Keep only tags that participate in equiv-pairs for alignment
+            var oldEquiv = oldTags.filter(function(t) { return !!EQUIV[t.name]; });
+            var newEquiv = newTags.filter(function(t) { return !!EQUIV[t.name]; });
+            var replacements = [];
+            var oi = 0;
+            for (var ni = 0; ni < newEquiv.length && oi < oldEquiv.length; ni++) {
+                var nt = newEquiv[ni];
+                var ot = oldEquiv[oi];
+                // Tags must match in open/close direction and be from the same equiv pair
+                if (nt.closing === ot.closing &&
+                    (nt.name === ot.name || EQUIV[nt.name] === ot.name)) {
+                    if (nt.name !== ot.name) {
+                        // Browser swapped the tag name — restore original
+                        var prefix = nt.closing ? '</' : '<';
+                        replacements.push({
+                            index: nt.index,
+                            length: nt.raw.length,
+                            replacement: prefix + ot.name + nt.attrs + '>'
+                        });
+                    }
+                    oi++;
+                }
+                // If they don't match at all (different pair, e.g. i vs b) we leave nt
+                // as-is and try the next newEquiv against the same oldEquiv position.
+            }
+            if (replacements.length === 0) return newBodyContent;
+            // Apply in reverse so earlier offsets stay valid
+            var result = newBodyContent;
+            for (var r = replacements.length - 1; r >= 0; r--) {
+                var rep = replacements[r];
+                result = result.substring(0, rep.index) + rep.replacement +
+                         result.substring(rep.index + rep.length);
+            }
+            return result;
+        }
+
         function syncFromDesign() {
             if (isSyncFromCode) return;
             const iframe = document.getElementById('preview');
@@ -3028,6 +3094,10 @@ if (isset($_GET['action'])) {
             var rawInner = cleanNbspInHtml(doc.body.innerHTML);
             // Ensure line breaks between block-level elements (Design outputs them on one line)
             rawInner = rawInner.replace(/(<\/(?:p|div|h[1-6]|ul|ol|li|table|tr|td|th|thead|tbody|blockquote|section|article|header|footer|nav|aside|figure|figcaption|hr|br|pre|dl|dt|dd)>)(<)/gi, '$1\n$2');
+            // Preserve original tag names (i vs em, b vs strong) from the code editor
+            // so that browser normalisation does not silently rename them.
+            var oldBodyInner = bodyMatch[0].replace(/^<body[^>]*>/i, '').replace(/<\/body>$/i, '');
+            rawInner = preserveEquivTags(oldBodyInner, rawInner);
             const newBody = '<body' + bodyMatch[1] + '>' + rawInner + '</body>';
             // Only update code if the body actually changed (avoids false dirty on select/copy)
             if (newBody === bodyMatch[0]) {
