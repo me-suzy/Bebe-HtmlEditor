@@ -1318,11 +1318,11 @@ if (isset($_GET['action'])) {
             <tr onclick="insertDiac('ă')"><td>ă</td><td>a cu breve</td><td>Ctrl + A</td></tr>
             <tr onclick="insertDiac('â')"><td>â</td><td>a cu circumflex</td><td>Alt + A</td></tr>
             <tr onclick="insertDiac('î')"><td>î</td><td>i cu circumflex</td><td>Ctrl + I</td></tr>
-            <tr onclick="insertDiac('Ȋ')"><td>Ȋ</td><td>I cu circumflex (mare)</td><td>Alt + I</td></tr>
-            <tr onclick="insertDiac('ṣ')"><td>ṣ</td><td>s cu sedila</td><td>Ctrl + Shift + S</td></tr>
-            <tr onclick="insertDiac('Ş')"><td>Ş</td><td>S cu sedila (mare)</td><td>Alt + S</td></tr>
-            <tr onclick="insertDiac('ṭ')"><td>ṭ</td><td>t cu sedila</td><td>Alt + T</td></tr>
-            <tr onclick="insertDiac('Ţ')"><td>Ţ</td><td>T cu sedila (mare)</td><td>Alt + Shift + T</td></tr>
+            <tr onclick="insertDiac('Î')"><td>Î</td><td>I cu circumflex (mare)</td><td>Alt + I</td></tr>
+            <tr onclick="insertDiac('ș')"><td>ș</td><td>s cu virgulă</td><td>Ctrl + Shift + S</td></tr>
+            <tr onclick="insertDiac('Ș')"><td>Ș</td><td>S cu virgulă (mare)</td><td>Alt + S</td></tr>
+            <tr onclick="insertDiac('ț')"><td>ț</td><td>t cu virgulă</td><td>Alt + T</td></tr>
+            <tr onclick="insertDiac('Ț')"><td>Ț</td><td>T cu virgulă (mare)</td><td>Alt + Shift + T</td></tr>
         </table>
     </div>
     <!-- Find & Replace Dialog -->
@@ -2176,12 +2176,13 @@ if (isset($_GET['action'])) {
             document.getElementById('btnSelectSasa').classList.add('active');
             // Visual highlight in design panel (SELECT mode — only between SASA markers)
             highlightSasaInDesign('select');
-            // Focus the right panel
+            // Focus the right panel; în modul DESIGN selectăm și textul vizibil
             if (viewMode === 'design') {
                 const iframe = document.getElementById('preview');
                 const iDoc = iframe && iframe.contentDocument;
                 if (iDoc && iDoc.body) {
                     iDoc.body.focus();
+                    selectSasaTextInDesign();
                 }
             } else {
                 editor.focus();
@@ -2223,10 +2224,10 @@ if (isset($_GET['action'])) {
             clearSasaDesignHighlight();
         }
 
-        // Add background highlight to design content between SASA markers (visual only).
+        // Add background highlight to design content between SASA markers.
         // mode='select' — only highlights between SASA-1 and SASA-2
         // mode='crop'   — also highlights h1.den_articol and td.text_dreapta
-        // Focus handling is done by selectSasaRegion(), not here.
+        // Focus/selection for SELECT este făcut în selectSasaRegion().
         function highlightSasaInDesign(mode) {
             const iframe = document.getElementById('preview');
             if (!iframe) return;
@@ -2269,6 +2270,37 @@ if (isset($_GET['action'])) {
             }
         }
 
+        // Selectează în Design (iframe) DOAR textul dintre comentariile <!-- SASA-1 --> și <!-- SASA-2 -->,
+        // astfel încât Ctrl+C să copieze direct textul vizibil (fără cod) după apăsarea butonului Select.
+        function selectSasaTextInDesign() {
+            const iframe = document.getElementById('preview');
+            if (!iframe) return;
+            const doc = iframe.contentDocument;
+            if (!doc || !doc.body) return;
+
+            // Găsim comentariile SASA-1 și SASA-2
+            let sasa1 = null, sasa2 = null;
+            const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_COMMENT, null);
+            let node;
+            while ((node = walker.nextNode())) {
+                const val = (node.nodeValue || '').trim();
+                if (val === 'SASA-1') sasa1 = node;
+                else if (val === 'SASA-2') sasa2 = node;
+            }
+            if (!sasa1 || !sasa2) return;
+
+            const selection = doc.getSelection();
+            if (!selection) return;
+            selection.removeAllRanges();
+
+            const range = doc.createRange();
+            // Range-ul începe imediat după comentariul SASA-1
+            range.setStartAfter(sasa1);
+            // și se termină chiar înainte de comentariul SASA-2
+            range.setEndBefore(sasa2);
+            selection.addRange(range);
+        }
+
         function clearSasaDesignHighlight(doc) {
             if (!doc) {
                 const iframe = document.getElementById('preview');
@@ -2286,9 +2318,26 @@ if (isset($_GET['action'])) {
             });
         }
 
-        // Replace &nbsp; with regular space only in the SASA region and h1.den_articol.
-        // Operates on the HTML string — never touches the DOM, so cursor position is preserved.
+        // Normalize Romanian diacritics so design-mode and code use the same characters.
+        // Maps older sedilă / punct-dedesubt variante (ş, ţ, ṣ, ṭ, etc.) la forma corectă cu virgulă (ș, ț).
+        function normalizeRomanianDiacritics(str) {
+            if (!str) return str;
+            return str
+                // ș mic
+                .replace(/[\u015F\u1E63]/g, 'ș')
+                // Ș mare
+                .replace(/[\u015E\u1E62]/g, 'Ș')
+                // ț mic
+                .replace(/[\u0163\u1E6D]/g, 'ț')
+                // Ț mare
+                .replace(/[\u0162\u1E6C]/g, 'Ț');
+        }
+
+        // Replace &nbsp; with regular space only in the SASA region and h1.den_articol,
+        // and normalize diacritics to UTF-8 românești standard. Operates on the HTML string
+        // — never at the DOM level, deci nu afectează poziția cursorului.
         function cleanNbspInHtml(html) {
+            if (!html) return html;
             // Between <!-- SASA-1 --> and <!-- SASA-2 -->
             html = html.replace(
                 /(<!-- SASA-1 -->)([\s\S]*?)(<!-- SASA-2 -->)/,
@@ -2299,6 +2348,8 @@ if (isset($_GET['action'])) {
                 /(<h1\b[^>]*\bden_articol\b[^>]*>)([\s\S]*?)(<\/h1>)/gi,
                 (_, open, content, close) => open + content.replace(/&nbsp;/gi, ' ') + close
             );
+            // Normalize diacritics everywhere in body html
+            html = normalizeRomanianDiacritics(html);
             return html;
         }
 
@@ -2662,11 +2713,11 @@ if (isset($_GET['action'])) {
             editor.addKeyMap({
                 'Ctrl-A': cm => { cm.replaceSelection('ă'); },
                 'Ctrl-I': cm => { cm.replaceSelection('î'); },
-                'Shift-Ctrl-S': cm => { cm.replaceSelection('ṣ'); },
-                'Alt-T': cm => { cm.replaceSelection('ṭ'); },
-                'Alt-Shift-T': cm => { cm.replaceSelection('Ţ'); },
-                'Alt-S': cm => { cm.replaceSelection('Ş'); },
-                'Alt-I': cm => { cm.replaceSelection('Ȋ'); },
+                'Shift-Ctrl-S': cm => { cm.replaceSelection('ș'); },
+                'Alt-T': cm => { cm.replaceSelection('ț'); },
+                'Alt-Shift-T': cm => { cm.replaceSelection('Ț'); },
+                'Alt-S': cm => { cm.replaceSelection('Ș'); },
+                'Alt-I': cm => { cm.replaceSelection('Î'); },
                 'Alt-A': cm => { cm.replaceSelection('â'); },
             });
 
@@ -3508,12 +3559,12 @@ if (isset($_GET['action'])) {
                 if (e.ctrlKey && !e.altKey && !e.metaKey) {
                     if (!e.shiftKey && e.key === 'a') _diac = 'ă';
                     else if (!e.shiftKey && e.key === 'i') _diac = 'î';
-                    else if (e.shiftKey && e.key === 'S') _diac = 'ṣ';
+                    else if (e.shiftKey && e.key === 'S') _diac = 'ș';
                 } else if (e.altKey && !e.ctrlKey && !e.metaKey) {
-                    if (!e.shiftKey && e.key === 't') _diac = 'ṭ';
-                    else if (e.shiftKey && e.key === 'T') _diac = 'Ţ';
-                    else if (!e.shiftKey && e.key === 's') _diac = 'Ş';
-                    else if (!e.shiftKey && e.key === 'i') _diac = 'Ȋ';
+                    if (!e.shiftKey && e.key === 't') _diac = 'ț';
+                    else if (e.shiftKey && e.key === 'T') _diac = 'Ț';
+                    else if (!e.shiftKey && e.key === 's') _diac = 'Ș';
+                    else if (!e.shiftKey && e.key === 'i') _diac = 'Î';
                     else if (!e.shiftKey && e.key === 'a') _diac = 'â';
                 }
                 if (_diac) {
