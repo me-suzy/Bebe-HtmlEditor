@@ -1950,7 +1950,7 @@ if (isset($_GET['action'])) {
         // Push current body state into the undo stack.
         // Call this BEFORE making a change, or periodically (every 500ms) to
         // capture incremental typing so undo reverts ~500ms of keystrokes at a time.
-        function designSaveSnapshot() {
+        function designSaveSnapshot(fromTimer) {
             const html = getDesignBodyHtml();
             if (html === null) return;
             if (lastDesignSnapshot === null) {
@@ -1959,9 +1959,14 @@ if (isset($_GET['action'])) {
             }
             if (html === lastDesignSnapshot) return; // nothing changed
             designUndoStack.push(lastDesignSnapshot);
-            if (designUndoStack.length > 100) designUndoStack.shift();
+            if (designUndoStack.length > 1000) designUndoStack.shift();
             lastDesignSnapshot = html;
-            designRedoStack = []; // new change clears the redo future
+            // Only clear the redo future for real user edits, NOT for
+            // periodic timer snapshots (which just chunk continuous typing
+            // into undo steps — they shouldn't destroy the redo history).
+            if (!fromTimer) {
+                designRedoStack = [];
+            }
         }
 
         // Explicitly push the CURRENT body state to the undo stack.
@@ -1979,7 +1984,7 @@ if (isset($_GET['action'])) {
             // Don't push if identical to the top of the stack
             if (designUndoStack.length > 0 && designUndoStack[designUndoStack.length - 1] === html) return;
             designUndoStack.push(html);
-            if (designUndoStack.length > 100) designUndoStack.shift();
+            if (designUndoStack.length > 1000) designUndoStack.shift();
             designRedoStack = [];
         }
 
@@ -1995,7 +2000,7 @@ if (isset($_GET['action'])) {
             // undo step covers ~500ms of keystroke activity.
             designSnapshotTimer = setInterval(() => {
                 if (!isApplyingUndoRedo && !isSyncFromCode && !sasaSelectionActive && !cropHighlightActive) {
-                    designSaveSnapshot();
+                    designSaveSnapshot(true);
                 }
             }, 500);
         }
@@ -3688,6 +3693,69 @@ if (isset($_GET['action'])) {
                         return;
                     }
                 }
+                // ── Enter key → insert <p class="text_obisnuit"> instead of <br> ──
+                if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    designSaveSnapshot();
+                    const win = iframe.contentWindow;
+                    const sel = win && win.getSelection();
+                    if (sel && sel.rangeCount > 0) {
+                        const range = sel.getRangeAt(0);
+                        range.deleteContents();
+                        // Create new <p class="text_obisnuit"> with a zero-width space
+                        // so the caret can be placed inside it
+                        const newP = doc.createElement('p');
+                        newP.className = 'text_obisnuit';
+                        newP.appendChild(doc.createElement('br'));
+                        // Insert the new paragraph after the current block
+                        // Find the closest block-level parent
+                        let block = range.startContainer;
+                        if (block.nodeType === Node.TEXT_NODE) block = block.parentNode;
+                        while (block && block !== doc.body &&
+                            !/^(P|DIV|H[1-6]|BLOCKQUOTE|LI|SECTION|ARTICLE|HEADER|FOOTER|MAIN|TABLE|UL|OL|PRE|FIGURE|FIGCAPTION|NAV|ASIDE|DETAILS|SUMMARY|FORM|FIELDSET|ADDRESS|HGROUP|SEARCH|DL|DT|DD)$/i.test(block.tagName)) {
+                            block = block.parentNode;
+                        }
+                        if (block && block !== doc.body) {
+                            // Split: move content after cursor into the new paragraph
+                            const afterRange = doc.createRange();
+                            afterRange.setStart(range.startContainer, range.startOffset);
+                            afterRange.setEnd(block, block.childNodes.length);
+                            const afterContents = afterRange.extractContents();
+                            // Check if afterContents has real content
+                            const hasContent = afterContents.textContent.trim().length > 0 ||
+                                afterContents.querySelector('img, br, hr, input, svg, video, audio, iframe, canvas, embed, object');
+                            if (hasContent) {
+                                // Move trailing content into the new <p>
+                                newP.innerHTML = '';
+                                newP.appendChild(afterContents);
+                                // If the new p ends up empty after extraction, add <br>
+                                if (!newP.textContent.trim() && !newP.querySelector('img, br, hr')) {
+                                    newP.appendChild(doc.createElement('br'));
+                                }
+                            }
+                            // If original block is now empty, add <br> placeholder
+                            if (!block.textContent.trim() && !block.querySelector('img, br, hr')) {
+                                block.appendChild(doc.createElement('br'));
+                            }
+                            block.parentNode.insertBefore(newP, block.nextSibling);
+                        } else {
+                            // Fallback: just insert at cursor position
+                            range.insertNode(newP);
+                        }
+                        // Place cursor at start of the new paragraph
+                        const newRange = doc.createRange();
+                        newRange.setStart(newP, 0);
+                        newRange.collapse(true);
+                        sel.removeAllRanges();
+                        sel.addRange(newRange);
+                        // Scroll the new paragraph into view
+                        newP.scrollIntoView({ block: 'nearest' });
+                    }
+                    clearTimeout(designInputDebounceTimer);
+                    designInputDebounceTimer = setTimeout(syncFromDesign, 80);
+                    return;
+                }
                 // Diacritice românești
                 let _diac = null;
                 if (e.ctrlKey && !e.altKey && !e.metaKey) {
@@ -3867,7 +3935,7 @@ if (isset($_GET['action'])) {
             const current = getDesignBodyHtml();
             if (current !== null) {
                 designUndoStack.push(current);
-                if (designUndoStack.length > 100) designUndoStack.shift();
+                if (designUndoStack.length > 1000) designUndoStack.shift();
             }
             // Pop next state from redo
             const next = designRedoStack.pop();
