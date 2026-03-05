@@ -3272,12 +3272,33 @@ if (isset($_GET['action'])) {
             });
         }
 
+        function buildDiacInsensitivePattern(text) {
+            const specials = /[.*+?^${}()|[\]\\]/;
+            let result = '';
+            for (const ch of text) {
+                if (ch === 'a' || ch === 'A') {
+                    result += '[aăâAĂÂ]';
+                } else if (ch === 'i' || ch === 'I') {
+                    result += '[iîIÎ]';
+                } else if (ch === 's' || ch === 'S') {
+                    result += '[sșşSȘŞ]';
+                } else if (ch === 't' || ch === 'T') {
+                    result += '[tțţTȚŢ]';
+                } else if (specials.test(ch)) {
+                    result += '\\' + ch;
+                } else {
+                    result += ch;
+                }
+            }
+            return result;
+        }
+
         function buildSearchRegex() {
             const query = document.getElementById('frFindInput').value;
             if (!query) return null;
             const caseSensitive = document.getElementById('frCaseSensitive').checked;
             const wholeWord = document.getElementById('frWholeWord').checked;
-            let pattern = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            let pattern = buildDiacInsensitivePattern(query);
             if (wholeWord) pattern = '\\b' + pattern + '\\b';
             const flags = caseSensitive ? 'g' : 'gi';
             try { return new RegExp(pattern, flags); } catch (e) { return null; }
