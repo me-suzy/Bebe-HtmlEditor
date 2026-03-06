@@ -1534,7 +1534,8 @@ if (isset($_GET['action'])) {
         <div class="fr-row">
             <label>Find:</label>
             <input type="text" id="frFindInput" placeholder="Search text..."
-                onkeydown="if(event.key==='Escape'){closeFindReplace();} else if(event.key==='Enter'){event.preventDefault();findNext();}">
+                oninput="_frLastQuery='__invalidated__';"
+                onkeydown="if(event.key==='Escape'){closeFindReplace();} else if(event.key==='Enter'){event.preventDefault();findNext();} else if(event.key==='F3'){event.preventDefault();event.shiftKey?findPrev():findNext();}">
         </div>
         <div class="fr-row">
             <label>Replace:</label>
@@ -1542,8 +1543,8 @@ if (isset($_GET['action'])) {
                 onkeydown="if(event.key==='Escape'){closeFindReplace();} else if(event.key==='Enter'){event.preventDefault();replaceCurrent();}">
         </div>
         <div class="fr-options">
-            <label><input type="checkbox" id="frCaseSensitive"> Case sensitive</label>
-            <label><input type="checkbox" id="frWholeWord"> Whole word</label>
+            <label><input type="checkbox" id="frCaseSensitive" onchange="_frLastQuery='__invalidated__';findNext();"> Case sensitive</label>
+            <label><input type="checkbox" id="frWholeWord" onchange="_frLastQuery='__invalidated__';findNext();"> Whole word</label>
         </div>
         <div class="fr-btns">
             <button class="fr-btn-ghost" onclick="findNext()">Find Next</button>
@@ -3252,6 +3253,29 @@ if (isset($_GET['action'])) {
         let frCurrentMatches = [];
         let frCurrentIdx = -1;
         let frMarks = [];
+        let _frLastQuery = '';       // last search string used to build matches
+        let _frLastCaseSens = false; // last Case Sensitive state
+        let _frLastWholeWord = false; // last Whole Word state
+        let _frLastDesignScope = false; // was last search design-scoped?
+
+        // Returns true when the search should be limited to the article zone
+        // (between <!-- ARTICOL START --> and <!-- ARTICOL FINAL -->).
+        function _isFindDesignScoped() {
+            if (viewMode === 'design') return true;
+            if (viewMode === 'code') return false;
+            // split mode — check if the iframe (design panel) had focus recently
+            const iframe = document.getElementById('preview');
+            try {
+                if (document.activeElement === iframe) return true;
+                // When find dialog takes focus, remember last active panel.
+                // The iframe's body being contentEditable means the user was
+                // working in design before opening Find.
+            } catch (e) {}
+            return _frDesignWasLastFocused;
+        }
+
+        // Track which panel the user interacted with last (for split mode).
+        let _frDesignWasLastFocused = false;
 
         function toggleFindReplace() {
             const dlg = document.getElementById('findReplaceDialog');
@@ -3286,6 +3310,8 @@ if (isset($_GET['action'])) {
             document.getElementById('findReplaceDialog').classList.remove('visible');
             clearFindMarks();
             document.getElementById('frInfo').textContent = '';
+            _frLastQuery = '';
+            frCurrentIdx = -1;
         }
 
         function clearFindMarks() {
@@ -3409,8 +3435,29 @@ if (isset($_GET['action'])) {
                 return;
             }
             const src = editor.getValue();
+
+            // Determine search boundaries.
+            // In design scope, restrict to <!-- ARTICOL START --> … <!-- ARTICOL FINAL -->
+            let searchStart = 0;
+            let searchEnd = src.length;
+            const designScoped = _isFindDesignScoped();
+            _frLastDesignScope = designScoped;
+
+            if (designScoped) {
+                const artStartMatch = src.indexOf('<!-- ARTICOL START -->');
+                const artEndMatch = src.indexOf('<!-- ARTICOL FINAL -->');
+                if (artStartMatch !== -1 && artEndMatch !== -1 && artEndMatch > artStartMatch) {
+                    searchStart = artStartMatch + '<!-- ARTICOL START -->'.length;
+                    searchEnd = artEndMatch;
+                }
+            }
+
             let m;
             while ((m = regex.exec(src)) !== null) {
+                // Skip matches outside the search boundaries
+                if (m.index < searchStart) continue;
+                if (m.index + m[0].length > searchEnd) break;
+
                 const from = editor.posFromIndex(m.index);
                 const to = editor.posFromIndex(m.index + m[0].length);
                 frCurrentMatches.push({ from, to, index: m.index, length: m[0].length });
@@ -3425,8 +3472,40 @@ if (isset($_GET['action'])) {
             highlightFindInDesign();
         }
 
-        function findNext() {
+        // Rebuild match list only when query or options changed since last search.
+        function _ensureFindMatches() {
+            const q = document.getElementById('frFindInput').value;
+            const cs = document.getElementById('frCaseSensitive').checked;
+            const ww = document.getElementById('frWholeWord').checked;
+            const ds = _isFindDesignScoped();
+            if (q === _frLastQuery && cs === _frLastCaseSens && ww === _frLastWholeWord
+                && ds === _frLastDesignScope && frCurrentMatches.length > 0) {
+                return; // matches are still valid
+            }
+            _frLastQuery = q;
+            _frLastCaseSens = cs;
+            _frLastWholeWord = ww;
             findAllMatches();
+            // After a fresh search, position index so the NEXT call lands on
+            // the first match at or after the current cursor.
+            if (frCurrentMatches.length > 0) {
+                const cursorIdx = editor.indexFromPos(editor.getCursor('from'));
+                frCurrentIdx = -1; // will be incremented by findNext
+                for (let i = 0; i < frCurrentMatches.length; i++) {
+                    if (frCurrentMatches[i].index >= cursorIdx) {
+                        frCurrentIdx = i - 1; // so +1 lands on i
+                        break;
+                    }
+                }
+                // If cursor is past all matches, wrap to start
+                if (frCurrentIdx === -1 && frCurrentMatches[0].index < cursorIdx) {
+                    frCurrentIdx = frCurrentMatches.length - 1; // wrap: next +1 → 0
+                }
+            }
+        }
+
+        function findNext() {
+            _ensureFindMatches();
             if (frCurrentMatches.length === 0) {
                 document.getElementById('frInfo').textContent = 'Niciun rezultat';
                 return;
@@ -3436,7 +3515,7 @@ if (isset($_GET['action'])) {
         }
 
         function findPrev() {
-            findAllMatches();
+            _ensureFindMatches();
             if (frCurrentMatches.length === 0) {
                 document.getElementById('frInfo').textContent = 'Niciun rezultat';
                 return;
@@ -3667,6 +3746,7 @@ if (isset($_GET['action'])) {
             let _isCodeDragging = false;
             editor.getWrapperElement().addEventListener('mousedown', () => {
                 _isCodeDragging = true;
+                _frDesignWasLastFocused = false; // user clicked in code panel
                 // Clear persistent image/icon highlight when user clicks in code
                 if (_imgClickMark) { _imgClickMark.clear(); _imgClickMark = null; }
             });
@@ -3679,6 +3759,129 @@ if (isset($_GET['action'])) {
                     }
                 }
             });
+            // ── Double/triple-click in code editor: select inner content of tag ──
+            // Shared logic: find the tag content surrounding the cursor and highlight it.
+            // Returns true if a selection was made, false otherwise.
+            function _selectTagContentAtCursor() {
+                const cursor = editor.getCursor();
+                const src = editor.getValue();
+                const cursorIdx = editor.indexFromPos(cursor);
+
+                // ── Strategy 1: Cursor inside a tag — select attribute value between quotes ──
+                let tagStart = -1;
+                for (let i = cursorIdx; i >= 0; i--) {
+                    if (src[i] === '<') { tagStart = i; break; }
+                    if (src[i] === '>' && i < cursorIdx) { tagStart = -1; break; }
+                }
+
+                if (tagStart !== -1) {
+                    const tagEnd = findTagClose(src, tagStart + 1);
+                    if (tagEnd !== -1 && cursorIdx <= tagEnd) {
+                        let i = tagStart + 1;
+                        while (i <= tagEnd) {
+                            const ch = src[i];
+                            if (ch === '"' || ch === "'") {
+                                const quoteChar = ch;
+                                const valStart = i + 1;
+                                let valEnd = valStart;
+                                while (valEnd <= tagEnd && src[valEnd] !== quoteChar) valEnd++;
+                                if (cursorIdx >= valStart && cursorIdx <= valEnd) {
+                                    const from = editor.posFromIndex(valStart);
+                                    const to = editor.posFromIndex(valEnd);
+                                    if (syncSelectionMark) { syncSelectionMark.clear(); syncSelectionMark = null; }
+                                    isSelectionFromDesign = true;
+                                    editor.setSelection(from, to);
+                                    editor.scrollIntoView({ from, to }, 100);
+                                    isSelectionFromDesign = false;
+                                    syncSelectionMark = editor.markText(from, to, { className: 'cm-selection-highlight' });
+                                    return true;
+                                }
+                                i = valEnd + 1;
+                                continue;
+                            }
+                            i++;
+                        }
+                        return false; // inside tag but not in attribute value
+                    }
+                }
+
+                // ── Strategy 2: Cursor between tags — select inner content of enclosing element ──
+                const beforeCursor = src.substring(0, cursorIdx);
+                const openTagPatterns = [
+                    /<p\s+class="text_obisnuit">/gi,
+                    /<p\s+class="text_obisnuit2">/gi,
+                    /<h1\s+class="den_articol"[^>]*>/gi,
+                    /<title>/gi,
+                ];
+                const closeTagMap = {
+                    'p': /<\/p>/gi,
+                    'h1': /<\/h1>/gi,
+                    'title': /<\/title>/gi,
+                };
+
+                let bestMatchEnd = -1;
+                let bestTagName = '';
+
+                for (const pattern of openTagPatterns) {
+                    pattern.lastIndex = 0;
+                    let m;
+                    while ((m = pattern.exec(beforeCursor)) !== null) {
+                        const matchEnd = m.index + m[0].length;
+                        if (matchEnd > bestMatchEnd) {
+                            bestMatchEnd = matchEnd;
+                            const tn = m[0].match(/^<(\w+)/);
+                            bestTagName = tn ? tn[1].toLowerCase() : '';
+                        }
+                    }
+                }
+
+                if (bestMatchEnd !== -1 && bestTagName) {
+                    const closePattern = closeTagMap[bestTagName];
+                    if (closePattern) {
+                        closePattern.lastIndex = 0;
+                        const restSrc = src.substring(bestMatchEnd);
+                        const closeMatch = closePattern.exec(restSrc);
+                        if (closeMatch) {
+                            const contentStart = bestMatchEnd;
+                            const contentEnd = bestMatchEnd + closeMatch.index;
+                            if (cursorIdx >= contentStart && cursorIdx <= contentEnd) {
+                                const from = editor.posFromIndex(contentStart);
+                                const to = editor.posFromIndex(contentEnd);
+                                if (syncSelectionMark) { syncSelectionMark.clear(); syncSelectionMark = null; }
+                                isSelectionFromDesign = true;
+                                editor.setSelection(from, to);
+                                editor.scrollIntoView({ from, to }, 100);
+                                isSelectionFromDesign = false;
+                                syncSelectionMark = editor.markText(from, to, { className: 'cm-selection-highlight' });
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+
+            // Track whether our tag-content selection is active so triple-click
+            // doesn't override it with CodeMirror's default line selection.
+            let _tagContentSelected = false;
+
+            // Intercept triple-click (and beyond) at mousedown BEFORE CodeMirror
+            // processes it, so it cannot select the whole line.
+            editor.getWrapperElement().addEventListener('mousedown', (e) => {
+                if (e.detail >= 3 && _tagContentSelected) {
+                    // Block CodeMirror's line/paragraph selection
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Re-apply tag content selection (it was set by dblclick)
+                    setTimeout(() => { _selectTagContentAtCursor(); }, 0);
+                }
+            }, true); // capture phase — fires before CodeMirror's handler
+
+            editor.getWrapperElement().addEventListener('dblclick', () => {
+                setTimeout(() => {
+                    _tagContentSelected = _selectTagContentAtCursor();
+                }, 10);
+            });
             editor.on('cursorActivity', () => {
                 if (isSelectionFromDesign) return;
                 if (isSyncFromDesign) return;
@@ -3686,6 +3889,7 @@ if (isset($_GET['action'])) {
                 // Always clear design-click highlights when user moves cursor in code
                 if (syncSelectionMark) { syncSelectionMark.clear(); syncSelectionMark = null; }
                 if (_imgClickMark) { _imgClickMark.clear(); _imgClickMark = null; }
+                _tagContentSelected = false;
                 // Daca cursorul este in interiorul zonei SASA, nu incercam sa facem
                 // „sync selection” catre Design (altfel se comporta ca un FIND si sare).
                 if (isCursorInsideSasa()) return;
@@ -3707,6 +3911,16 @@ if (isset($_GET['action'])) {
                 if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
                     e.preventDefault();
                     saveFile();
+                }
+                // F3 / Shift+F3 — Find Next / Find Prev (only when Find dialog is open)
+                if (e.key === 'F3') {
+                    const dlg = document.getElementById('findReplaceDialog');
+                    if (dlg && dlg.classList.contains('visible')) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (e.shiftKey) findPrev(); else findNext();
+                        return;
+                    }
                 }
                 // Ctrl+H — open Find & Replace
                 if ((e.ctrlKey || e.metaKey) && (e.key === 'h' || e.key === 'H')) {
@@ -4183,6 +4397,8 @@ if (isset($_GET['action'])) {
             const doc = iframe.contentDocument;
             if (!doc || !doc.body || !isCurrentFileHtml()) return;
             doc.body.contentEditable = 'true';
+            // Track that design panel was last focused (for Find scope in split mode)
+            doc.addEventListener('mousedown', () => { _frDesignWasLastFocused = true; });
             // Block text drag-and-drop in design panel (prevents accidental moves)
             doc.addEventListener('dragstart', function (e) { e.preventDefault(); });
             doc.addEventListener('drop', function (e) { e.preventDefault(); });
@@ -4220,6 +4436,16 @@ if (isset($_GET['action'])) {
                     e.preventDefault();
                     e.stopPropagation();
                     window.parent.toggleFindReplace ? window.parent.toggleFindReplace() : toggleFindReplace();
+                }
+                // F3 / Shift+F3 — Find Next / Find Prev from design panel
+                if (e.key === 'F3') {
+                    const dlg = document.getElementById('findReplaceDialog');
+                    if (dlg && dlg.classList.contains('visible')) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (e.shiftKey) findPrev(); else findNext();
+                        return;
+                    }
                 }
                 // Escape — close Find & Replace from design panel
                 if (e.key === 'Escape') {
