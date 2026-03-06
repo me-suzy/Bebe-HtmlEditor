@@ -1228,6 +1228,69 @@ if (isset($_GET['action'])) {
             cursor: pointer;
         }
 
+        /* Generic error popup with selectable text */
+        .error-popup {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.75);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 4000;
+        }
+
+        .error-popup.visible {
+            display: flex;
+        }
+
+        .error-popup-inner {
+            background: #111827;
+            border: 1px solid #4b5563;
+            border-radius: 8px;
+            padding: 16px 18px;
+            width: 520px;
+            max-width: 95vw;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
+        }
+
+        .error-popup-title {
+            color: #f87171;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .error-popup-inner textarea {
+            width: 100%;
+            min-height: 90px;
+            resize: vertical;
+            background: #020617;
+            border: 1px solid #4b5563;
+            color: #e5e7eb;
+            font-family: Consolas, monospace;
+            font-size: 13px;
+            padding: 8px;
+            border-radius: 4px;
+        }
+
+        .error-popup-buttons {
+            margin-top: 10px;
+            text-align: right;
+        }
+
+        .error-popup-buttons button {
+            background: #374151;
+            color: #e5e7eb;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .error-popup-buttons button:hover {
+            background: #4b5563;
+        }
+
         /* Reusable button styles (Find & Replace + Translate panel) */
         .fr-btn-primary {
             background: #3b82f6;
@@ -2309,6 +2372,37 @@ if (isset($_GET['action'])) {
             const st = document.getElementById('status');
             st.textContent = msg;
             setTimeout(() => { st.textContent = 'Pregatit'; }, 4000);
+        }
+
+        function showErrorPopup(msg) {
+            let dlg = document.getElementById('errorPopup');
+            if (!dlg) {
+                dlg = document.createElement('div');
+                dlg.id = 'errorPopup';
+                dlg.className = 'error-popup';
+                dlg.innerHTML =
+                    '<div class="error-popup-inner">' +
+                    '<div class="error-popup-title">Eroare</div>' +
+                    '<textarea id="errorPopupText" readonly></textarea>' +
+                    '<div class="error-popup-buttons">' +
+                    '<button type="button" id="errorPopupClose">Închide</button>' +
+                    '</div>' +
+                    '</div>';
+                document.body.appendChild(dlg);
+                const closeBtn = document.getElementById('errorPopupClose');
+                if (closeBtn) {
+                    closeBtn.addEventListener('click', function () {
+                        dlg.classList.remove('visible');
+                    });
+                }
+            }
+            const ta = document.getElementById('errorPopupText');
+            if (ta) {
+                ta.value = msg || '';
+                ta.focus();
+                ta.select();
+            }
+            dlg.classList.add('visible');
         }
 
         function shortName(path) {
@@ -3911,9 +4005,28 @@ if (isset($_GET['action'])) {
         }
 
         async function saveFile() {
+            if (!editor) return;
             if (!currentFile) {
-                toast('Acest fisier este nou (deschis prin Drag & Drop) si nu are o cale cunoscuta pe disc. Pentru a salva direct in locatia originala, deschide fisierul prin campul de cale sau din lista din stanga.');
-                return;
+                const hint =
+                    'Acest fisier a fost deschis prin Drag & Drop si nu are o cale cunoscuta pe disc.\n\n' +
+                    'Scrie mai jos CALEA COMPLETA unde vrei sa fie salvat,\n' +
+                    'de exemplu:\n' +
+                    'e:/Carte/BB/17 - Site Leadership/Principal/en/the-feelings-of-an-artist-fascinated-by-the-meticulousness-of-his-passion.html';
+                const input = window.prompt(hint, '');
+                if (!input) {
+                    showErrorPopup(
+                        'Salvarea a fost anulata.\n\n' +
+                        'Motiv: fisierul nu are o cale cunoscuta pe disc, iar nicio cale noua nu a fost furnizata.\n\n' +
+                        'Poti deschide fisierul prin campul de cale din ecranul initial\n' +
+                        'sau poti apasa din nou Save si sa introduci o cale completa.');
+                    return;
+                }
+                const trimmed = input.trim();
+                if (!trimmed) {
+                    showErrorPopup('Calea introdusa este goala. Te rog sa incerci din nou cu o cale completa catre fisier.');
+                    return;
+                }
+                currentFile = trimmed;
             }
             try {
                 const body = new URLSearchParams();
@@ -4471,7 +4584,12 @@ if (isset($_GET['action'])) {
         }
 
         function doUndoFromDesign() {
-            if (!editor || !isCurrentFileHtml()) return;
+            if (!editor) return;
+            // In Code view (sau pentru fisiere non-HTML), folosim undo-ul nativ al editorului de cod.
+            if (!isCurrentFileHtml() || viewMode === 'code') {
+                try { editor.undo(); } catch (e) { }
+                return;
+            }
             const iframe = document.getElementById('preview');
             if (!iframe || !iframe.contentDocument || !iframe.contentDocument.body) return;
             // Flush any pending design→code sync so CodeMirror is in sync
@@ -4561,7 +4679,12 @@ if (isset($_GET['action'])) {
         }
 
         function doRedoFromDesign() {
-            if (!editor || !isCurrentFileHtml()) return;
+            if (!editor) return;
+            // In Code view (sau pentru fisiere non-HTML), folosim redo-ul nativ al editorului de cod.
+            if (!isCurrentFileHtml() || viewMode === 'code') {
+                try { editor.redo(); } catch (e) { }
+                return;
+            }
             const iframe = document.getElementById('preview');
             if (!iframe || !iframe.contentDocument || !iframe.contentDocument.body) return;
             flushPendingDesignSync();
