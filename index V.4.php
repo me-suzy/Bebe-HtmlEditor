@@ -529,33 +529,70 @@ if (isset($_GET['action'])) {
             echo json_encode(['ok' => false, 'error' => 'Text gol.']);
             exit;
         }
-        // Endpoint public neoficial Google Translate (fără cheie)
-        $apiUrl = 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t'
-            . '&sl=' . urlencode($sl)
-            . '&tl=' . urlencode($tl)
-            . '&q=' . urlencode($q);
-        $ctx = stream_context_create([
-            'http' => [
-                'header' => "User-Agent: Mozilla/5.0\r\nAccept: application/json,text/plain,*/*\r\n",
-                'timeout' => 10
-            ],
-            'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
-        ]);
-        $resp = @file_get_contents($apiUrl, false, $ctx);
-        if ($resp === false) {
-            echo json_encode(['ok' => false, 'error' => 'Nu s-a putut apela serviciul de traducere.']);
-            exit;
+
+        $translated = false;
+
+        // ── Method 1: cURL with Google Translate (client=gtx) ──
+        if (function_exists('curl_init')) {
+            $apiUrl = 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t'
+                . '&sl=' . urlencode($sl)
+                . '&tl=' . urlencode($tl)
+                . '&q=' . urlencode($q);
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $apiUrl,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 10,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_HTTPHEADER => [
+                    'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept: */*',
+                ],
+            ]);
+            $resp = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            if ($resp !== false && $httpCode === 200) {
+                $data = json_decode($resp, true);
+                if (is_array($data) && isset($data[0]) && is_array($data[0])) {
+                    $translated = '';
+                    foreach ($data[0] as $chunk) {
+                        if (isset($chunk[0])) $translated .= $chunk[0];
+                    }
+                }
+            }
         }
-        $data = json_decode($resp, true);
-        if (!is_array($data) || !isset($data[0])) {
-            echo json_encode(['ok' => false, 'error' => 'Răspuns de la Google Translate necunoscut.']);
-            exit;
+
+        // ── Method 2: fallback file_get_contents ──
+        if ($translated === false) {
+            $apiUrl = 'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t'
+                . '&sl=' . urlencode($sl)
+                . '&tl=' . urlencode($tl)
+                . '&q=' . urlencode($q);
+            $ctx = stream_context_create([
+                'http' => [
+                    'header' => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nAccept: */*\r\n",
+                    'timeout' => 10
+                ],
+                'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+            ]);
+            $resp = @file_get_contents($apiUrl, false, $ctx);
+            if ($resp !== false) {
+                $data = json_decode($resp, true);
+                if (is_array($data) && isset($data[0]) && is_array($data[0])) {
+                    $translated = '';
+                    foreach ($data[0] as $chunk) {
+                        if (isset($chunk[0])) $translated .= $chunk[0];
+                    }
+                }
+            }
         }
-        $translated = '';
-        foreach ($data[0] as $chunk) {
-            if (isset($chunk[0])) $translated .= $chunk[0];
+
+        if ($translated !== false && $translated !== '') {
+            echo json_encode(['ok' => true, 'text' => $translated]);
+        } else {
+            echo json_encode(['ok' => false, 'error' => 'Nu s-a putut traduce. Verifică conexiunea la internet.']);
         }
-        echo json_encode(['ok' => true, 'text' => $translated]);
         exit;
     }
 
@@ -3074,28 +3111,12 @@ if (isset($_GET['action'])) {
                 // Reset la dimensiunea implicită de fiecare dată când se deschide
                 dlg.style.width = '';
                 dlg.style.height = '';
-                dlg.style.right = 'auto';
                 dlg.style.bottom = 'auto';
 
-                // Poziționare implicită: sub butonul "Reincarca preview",
-                // adică în partea dreaptă, deasupra panoului de Design.
-                const previewHeaderBtn = document.querySelector('.preview-pane .preview-header button');
-                const anchor = previewHeaderBtn || document.getElementById('preview');
-                if (anchor) {
-                    const r = anchor.getBoundingClientRect();
-                    // 16px sub header, aliniat aproximativ cu marginea dreaptă a preview-ului
-                    let left = r.right - 520; // 520px = lățimea implicită a panoului
-                    let top = r.bottom + 8;
-                    const margin = 12;
-                    if (left < margin) left = margin;
-                    if (top < 60) top = 60;
-                    dlg.style.left = left + 'px';
-                    dlg.style.top = top + 'px';
-                } else {
-                    // fallback: colțul dreapta-sus cu mic offset
-                    dlg.style.left = (window.innerWidth - 520 - 20) + 'px';
-                    dlg.style.top = '70px';
-                }
+                // Poziționare implicită: dreapta sus, sub toolbar
+                const margin = 12;
+                dlg.style.left = (window.innerWidth - 520 - margin) + 'px';
+                dlg.style.top = '70px';
                 dlg.classList.add('visible');
                 loadSelectionIntoTranslate();
                 dlg.focus();
