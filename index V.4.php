@@ -4373,6 +4373,8 @@ if (isset($_GET['action'])) {
             clearSasaDesignHighlight(doc);
             // Replace &nbsp; with regular space in SASA region and h1.den_articol
             var rawInner = cleanNbspInHtml(doc.body.innerHTML);
+            // Remove data-orig-class helper attribute so it never persists to saved code
+            rawInner = rawInner.replace(/\s*data-orig-class="[^"]*"/gi, '');
             // Ensure line breaks between block-level elements (Design outputs them on one line)
             rawInner = rawInner.replace(/(<\/(?:p|div|h[1-6]|ul|ol|li|table|tr|td|th|thead|tbody|blockquote|section|article|header|footer|nav|aside|figure|figcaption|hr|br|pre|dl|dt|dd)>)(<)/gi, '$1\n$2');
             // Preserve original tag names (i vs em, b vs strong) from the code editor
@@ -6030,10 +6032,24 @@ if (isset($_GET['action'])) {
                 const BLOCK_TAGS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th', 'blockquote', 'pre', 'article', 'section', 'figure', 'header', 'footer', 'main', 'nav']);
                 if (BLOCK_TAGS.has((ancestor.tagName || '').toLowerCase()) &&
                     selectedText.trim() === ancestor.textContent.trim()) {
-                    if (value) {
+                    if (value && ancestor.classList.contains(value)) {
+                        // Toggle off: restaurează clasa originală salvată
+                        const origClass = ancestor.getAttribute('data-orig-class');
+                        ancestor.removeAttribute('data-orig-class');
+                        if (origClass) {
+                            ancestor.className = origClass;
+                        } else {
+                            ancestor.removeAttribute('class');
+                        }
+                    } else if (value) {
+                        // Salvează clasa curentă înainte de a aplica text_obisnuit2
+                        if (!ancestor.hasAttribute('data-orig-class')) {
+                            ancestor.setAttribute('data-orig-class', ancestor.className || '');
+                        }
                         ancestor.className = value;
                     } else {
                         ancestor.removeAttribute('class');
+                        ancestor.removeAttribute('data-orig-class');
                     }
                     syncFromDesign();
                     lastDesignSnapshot = getDesignBodyHtml();
@@ -6095,10 +6111,24 @@ if (isset($_GET['action'])) {
                 // Case 4: no text selection (cursor only) → change the clicked element's class directly
                 const el = getDesignSelection();
                 if (!el) return;
-                if (value) {
+                if (value && el.classList.contains(value)) {
+                    // Toggle off: restaurează clasa originală salvată
+                    const origClass = el.getAttribute('data-orig-class');
+                    el.removeAttribute('data-orig-class');
+                    if (origClass) {
+                        el.className = origClass;
+                    } else {
+                        el.removeAttribute('class');
+                    }
+                } else if (value) {
+                    // Salvează clasa curentă înainte de a aplica text_obisnuit2
+                    if (!el.hasAttribute('data-orig-class')) {
+                        el.setAttribute('data-orig-class', el.className || '');
+                    }
                     el.className = value;
                 } else {
                     el.removeAttribute('class');
+                    el.removeAttribute('data-orig-class');
                 }
             }
             syncFromDesign();
