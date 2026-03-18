@@ -1717,7 +1717,7 @@ if (isset($_GET['action'])) {
                     <div class="status" id="status" style="position:absolute;right:12px;pointer-events:none;white-space:nowrap;opacity:0.7"></div>
                 </div>
             </div>
-            <div class="split mode-split" id="splitContainer">
+            <div class="split mode-design" id="splitContainer">
                 <div class="editor-pane">
                     <div class="editor-header">
                         <div>Cod (UTF-8)</div>
@@ -1811,7 +1811,7 @@ if (isset($_GET['action'])) {
         let syncSelectionMark = null;   // markText handle for yellow selection highlight in code
         let _imgClickMark = null;       // persistent markText for image/icon click highlight
         let isDirty = false;
-        let viewMode = 'split';
+        let viewMode = 'design';
         let skipPreviewUpdateUntil = 0;
         let sidebarVisible = true;
         let lastPreviewHadBody = false;
@@ -1853,7 +1853,7 @@ if (isset($_GET['action'])) {
                 scrollInfo: opts.scrollInfo || { left: 0, top: 0 },
                 undoHistory: opts.undoHistory || null,
                 isDirty: false,
-                viewMode: opts.viewMode || 'split',
+                viewMode: opts.viewMode || 'design',
                 lastPreviewHadBody: opts.lastPreviewHadBody || false,
                 designUndoStack: [],
                 designRedoStack: [],
@@ -4000,7 +4000,7 @@ if (isset($_GET['action'])) {
                     }
                 }
             }, true);
-            setViewMode('split');
+            setViewMode('design');
             initSplitter();
         }
 
