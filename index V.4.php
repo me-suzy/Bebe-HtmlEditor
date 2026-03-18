@@ -4027,6 +4027,10 @@ if (isset($_GET['action'])) {
                 btnSplit.classList.toggle('active', mode === 'split');
                 btnDesign.classList.toggle('active', mode === 'design');
             }
+            // CodeMirror needs refresh when becoming visible after being hidden
+            if (mode !== 'design' && typeof editor !== 'undefined' && editor) {
+                setTimeout(() => editor.refresh(), 20);
+            }
         }
 
         function initSplitter() {
@@ -4267,6 +4271,7 @@ if (isset($_GET['action'])) {
                 designRedoStack = [];
                 lastDesignSnapshot = null;
 
+                setViewMode(tab.viewMode);
                 renderTabs();
                 hideOverlay();
             } catch (e) {
