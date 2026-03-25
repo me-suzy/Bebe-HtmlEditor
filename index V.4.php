@@ -3330,9 +3330,24 @@ if (isset($_GET['action'])) {
         function closeFindReplace() {
             document.getElementById('findReplaceDialog').classList.remove('visible');
             clearFindMarks();
+            frCurrentMatches = [];
             document.getElementById('frInfo').textContent = '';
             _frLastQuery = '';
             frCurrentIdx = -1;
+            // Deselect in CodeMirror — just collapse cursor to remove selection highlight
+            if (editor) {
+                const cursor = editor.getCursor('from');
+                editor.setCursor(cursor);
+                editor.focus();
+            }
+            // Also deselect in design panel
+            try {
+                const iframe = document.getElementById('preview');
+                const win = iframe && iframe.contentWindow;
+                if (win && win.getSelection) {
+                    win.getSelection().removeAllRanges();
+                }
+            } catch (e) {}
         }
 
         function clearFindMarks() {
@@ -3587,24 +3602,68 @@ if (isset($_GET['action'])) {
 
         function replaceCurrent() {
             if (!editor) return;
+            const findText = document.getElementById('frFindInput').value;
             const replaceText = document.getElementById('frReplaceInput').value;
-            // If we have a current match selected, replace it
-            if (frCurrentIdx >= 0 && frCurrentIdx < frCurrentMatches.length) {
-                const match = frCurrentMatches[frCurrentIdx];
-                editor.setSelection(match.from, match.to);
+            if (!findText) return;
+
+            // Check if the current CodeMirror selection already matches the search term
+            const currentSel = editor.getSelection();
+            const regex = buildSearchRegex();
+            if (regex && currentSel && currentSel.match(new RegExp('^' + regex.source + '$', regex.flags))) {
+                // The selection IS a match — replace it immediately
                 editor.replaceSelection(replaceText);
                 isDirty = true;
-                // Re-find from current position
+                // Re-find and go to next match
                 findAllMatches();
                 if (frCurrentMatches.length > 0) {
-                    if (frCurrentIdx >= frCurrentMatches.length) frCurrentIdx = 0;
+                    // Find the match at or after current cursor position
+                    const cursorIdx = editor.indexFromPos(editor.getCursor('from'));
+                    frCurrentIdx = 0;
+                    for (let i = 0; i < frCurrentMatches.length; i++) {
+                        if (frCurrentMatches[i].index >= cursorIdx) {
+                            frCurrentIdx = i;
+                            break;
+                        }
+                    }
                     goToMatch(frCurrentIdx);
                 } else {
                     document.getElementById('frInfo').textContent = 'Niciun rezultat ramas';
                 }
             } else {
-                // No active match — find first then replace
-                findNext();
+                // Selection doesn't match — find the first match, then replace it
+                _ensureFindMatches();
+                if (frCurrentMatches.length === 0) {
+                    document.getElementById('frInfo').textContent = 'Niciun rezultat';
+                    return;
+                }
+                // Find closest match to cursor
+                const cursorIdx = editor.indexFromPos(editor.getCursor('from'));
+                frCurrentIdx = 0;
+                for (let i = 0; i < frCurrentMatches.length; i++) {
+                    if (frCurrentMatches[i].index >= cursorIdx) {
+                        frCurrentIdx = i;
+                        break;
+                    }
+                }
+                const match = frCurrentMatches[frCurrentIdx];
+                editor.setSelection(match.from, match.to);
+                editor.replaceSelection(replaceText);
+                isDirty = true;
+                // Re-find and advance
+                findAllMatches();
+                if (frCurrentMatches.length > 0) {
+                    const newCursorIdx = editor.indexFromPos(editor.getCursor('from'));
+                    frCurrentIdx = 0;
+                    for (let i = 0; i < frCurrentMatches.length; i++) {
+                        if (frCurrentMatches[i].index >= newCursorIdx) {
+                            frCurrentIdx = i;
+                            break;
+                        }
+                    }
+                    goToMatch(frCurrentIdx);
+                } else {
+                    document.getElementById('frInfo').textContent = 'Niciun rezultat ramas';
+                }
             }
         }
 
@@ -3647,6 +3706,10 @@ if (isset($_GET['action'])) {
             editor.setSize('100%', '100%');
             // Diacritice românești în editorul de cod
             editor.addKeyMap({
+                'Enter': cm => {
+                    // Insert a single newline without extra indentation
+                    cm.replaceSelection('\n');
+                },
                 'Ctrl-A': cm => { cm.replaceSelection('ă'); },
                 'Ctrl-I': cm => { cm.replaceSelection('î'); },
                 'Shift-Ctrl-S': cm => { cm.replaceSelection('ș'); },
@@ -6128,23 +6191,52 @@ if (isset($_GET['action'])) {
                         // Toggle off: restaurează clasa originală salvată
                         const origClass = ancestor.getAttribute('data-orig-class');
                         ancestor.removeAttribute('data-orig-class');
-                        if (origClass) {
-                            ancestor.className = origClass;
-                        } else {
-                            ancestor.removeAttribute('class');
-                        }
+                        // Default to text_obisnuit if no original class was saved
+                        ancestor.className = origClass || 'text_obisnuit';
                     } else if (value) {
                         // Salvează clasa curentă înainte de a aplica text_obisnuit2
                         if (!ancestor.hasAttribute('data-orig-class')) {
                             ancestor.setAttribute('data-orig-class', ancestor.className || '');
                         }
                         ancestor.className = value;
+                        // Unwrap any inner <span> elements that have the same class
+                        // (e.g. <span class="text_obisnuit2"> inside <p class="text_obisnuit2">)
+                        const redundantSpans = ancestor.querySelectorAll('span.' + value);
+                        redundantSpans.forEach(span => {
+                            const parent = span.parentNode;
+                            while (span.firstChild) parent.insertBefore(span.firstChild, span);
+                            parent.removeChild(span);
+                        });
+                        ancestor.normalize();
                     } else {
                         ancestor.removeAttribute('class');
                         ancestor.removeAttribute('data-orig-class');
                     }
                     syncFromDesign();
                     lastDesignSnapshot = getDesignBodyHtml();
+                    // Force design panel refresh so CSS changes are visible immediately
+                    applyCodeToDesignPanel();
+                    // Re-select the paragraph in design so user can toggle B again
+                    setTimeout(() => {
+                        try {
+                            const iframe = document.getElementById('preview');
+                            const iDoc = iframe.contentDocument;
+                            const iWin = iframe.contentWindow;
+                            if (!iDoc || !iWin) return;
+                            // Find the same paragraph by matching text content
+                            const allBlocks = iDoc.querySelectorAll('p, div, h1, h2, h3, h4, h5, h6, li, td, th, blockquote');
+                            for (const block of allBlocks) {
+                                if (block.textContent.trim() === selectedText.trim()) {
+                                    const r = iDoc.createRange();
+                                    r.selectNodeContents(block);
+                                    const s = iWin.getSelection();
+                                    s.removeAllRanges();
+                                    s.addRange(r);
+                                    break;
+                                }
+                            }
+                        } catch (e) {}
+                    }, 50);
                     return;
                 }
 
