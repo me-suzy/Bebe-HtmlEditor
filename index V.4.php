@@ -1702,11 +1702,11 @@ if (isset($_GET['action'])) {
                         title="Deschide Google Translate" style="font-weight:600">Google</button>
                     <button type="button" id="btnTranslatePanel" onclick="toggleTranslatePopup()"
                         title="Traducere text selectat" style="margin-left:6px">Tradu</button>
-                    <button type="button" id="btnAddCat" onclick="addCatDuplicateFirstArticle()"
-                        title="Duplică primul articol din listă (doar pagini cu ARTICOL CATEGORIE START)"
+                    <button type="button" id="btnAddCat" onclick="addCatMergeToCategory()"
+                        title="Articol deschis → fișier categorie (leadership-…html); sau duplicare dacă e deschisă pagina categorie"
                         style="margin-left:6px">ADD-CAT</button>
                     <button type="button" id="btnToIndex" onclick="pushFirstCategoryBlockToIndex()"
-                        title="Articolul cu data cea mai nouă din secțiunea categorie (START/FINAL) → ro/index.html"
+                        title="Articol deschis sau listă categorie → ro/index.html (fără dubluri, primul = cel mai nou)"
                         style="margin-left:6px">To-INDEX</button>
                 </div>
                 <div class="viewmode-tabs" style="margin-left:20px">
@@ -3184,6 +3184,71 @@ if (isset($_GET['action'])) {
             toast('ADD-CAT: primul articol duplicat.');
         }
 
+        async function addCatMergeToCategory() {
+            if (!editor) {
+                toast('Editor indisponibil.');
+                return;
+            }
+            if (!isCurrentFileHtml()) {
+                toast('ADD-CAT este doar pentru fișiere HTML.');
+                return;
+            }
+            const src = editor.getValue();
+            const marker = '<!-- ARTICOL CATEGORIE START -->';
+            if (src.indexOf(marker) !== -1) {
+                addCatDuplicateFirstArticle();
+                return;
+            }
+            const built = buildCategoryBlockFromArticleHtml(src);
+            if (!built.ok) {
+                toast('ADD-CAT: ' + built.msg);
+                return;
+            }
+            if (!currentFile) {
+                toast('ADD-CAT: salvează articolul cu o cale pe disc (același dosar ca paginile categorie).');
+                return;
+            }
+            const catPath = categoryPathBesideArticle(currentFile, built.categoryFile);
+            if (normPathLoose(catPath) === normPathLoose(currentFile)) {
+                toast('ADD-CAT: linkul categoriei pare să fie același fișier ca articolul; verifică text_dreapta.');
+                return;
+            }
+            const apiBase = window.location.pathname.replace(/[#?].*$/, '');
+            toast('ADD-CAT: citesc ' + built.categoryFile + '…');
+            try {
+                const loadUrl = apiBase + '?action=load&file=' + encodeURIComponent(catPath);
+                const res = await fetch(loadUrl);
+                const data = await res.json();
+                if (!data.ok) {
+                    toast('ADD-CAT: nu pot citi categoria: ' + (data.error || 'eroare'));
+                    return;
+                }
+                const cat = data.content || '';
+                const merged = mergeCategoryBlockIntoCategoryHtml(cat, built.block);
+                if (!merged.ok) {
+                    toast(merged.msg);
+                    return;
+                }
+                if (merged.action === 'skip') {
+                    toast('ADD-CAT: ' + merged.msg);
+                    return;
+                }
+                const body = new URLSearchParams();
+                body.append('file', catPath);
+                body.append('content', merged.html);
+                const resSave = await fetch(apiBase + '?action=save', { method: 'POST', body });
+                const saveData = await resSave.json();
+                if (!saveData.ok) {
+                    toast('ADD-CAT: nu pot salva categoria: ' + (saveData.error || 'eroare'));
+                    return;
+                }
+                toast('ADD-CAT: ' + merged.msg);
+            } catch (e) {
+                console.error(e);
+                toast('ADD-CAT: ' + (e.message || String(e)));
+            }
+        }
+
         // Țintă fixă: lista articolelor de pe homepage RO (categorii).
         const TO_INDEX_HTML_PATH = 'e:/Carte/BB/17 - Site Leadership/Principal/ro/index.html';
 
@@ -3353,21 +3418,208 @@ if (isset($_GET['action'])) {
             return list;
         }
 
+        function getInsertPosAfterCategoryDiv(indexHtml, divEndGlobal) {
+            const afterDiv = indexHtml.slice(divEndGlobal);
+            const bm = afterDiv.match(CATEGORY_ARTICLE_BLOCK_RE);
+            if (bm) return divEndGlobal + bm[1].length;
+            const ws = afterDiv.match(/^(\s*)/);
+            return divEndGlobal + (ws ? ws[1].length : 0);
+        }
+
         function insertBlockAfterIndexCategoryDiv(indexHtml, blockHtml) {
             const loc = locateIndexCategoryDivEnd(indexHtml);
             if (!loc.ok) return loc;
-            const afterDiv = indexHtml.slice(loc.divEndGlobal);
-            const bm = afterDiv.match(CATEGORY_ARTICLE_BLOCK_RE);
-            let insertPos;
-            if (bm) insertPos = loc.divEndGlobal + bm[1].length;
-            else {
-                const ws = afterDiv.match(/^(\s*)/);
-                insertPos = loc.divEndGlobal + (ws ? ws[1].length : 0);
-            }
+            const insertPos = getInsertPosAfterCategoryDiv(indexHtml, loc.divEndGlobal);
             const raw = indexHtml.slice(0, insertPos) + blockHtml + indexHtml.slice(insertPos);
             return {
                 ok: true,
                 html: normalizeBreakAfterTextObisnuitBeforeTable(raw)
+            };
+        }
+
+        function categoryPathBesideArticle(articlePath, categoryFileName) {
+            const ap = String(articlePath || '').replace(/[/\\]+$/, '');
+            const idx = Math.max(ap.lastIndexOf('/'), ap.lastIndexOf('\\'));
+            if (idx === -1) return String(categoryFileName || '');
+            return ap.slice(0, idx + 1) + String(categoryFileName || '');
+        }
+
+        /**
+         * Din HTML articol (fără pagină categorie): canonical, title, meta description, text_dreapta
+         * → același bloc ca în listele categorie/index. Deduce leadership-foo.html din linkuri .html ≠ articol.
+         */
+        function buildCategoryBlockFromArticleHtml(html) {
+            const canM = html.match(/<link[^>]*\brel\s*=\s*["']canonical["'][^>]*\bhref\s*=\s*["']([^"']+)["']/i)
+                || html.match(/<link[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*\brel\s*=\s*["']canonical["']/i);
+            const canonical = canM ? canM[1].trim() : '';
+            if (!canonical) return { ok: false, msg: 'Lipsește link canonical.' };
+
+            let title = '';
+            const tM = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+            if (tM) {
+                title = tM[1].replace(/\s+/g, ' ').trim();
+                title = title.replace(/\s*\|\s*Neculai\s+Fantanaru\s*$/i, '').trim();
+            }
+            if (!title) return { ok: false, msg: 'Lipsește &lt;title&gt;.' };
+
+            let desc = '';
+            const dM = html.match(/<meta\s+name\s*=\s*["']description["']\s+content\s*=\s*["']([^"']*)["']/i)
+                || html.match(/<meta\s+content\s*=\s*["']([^"']*)["']\s+name\s*=\s*["']description["']/i);
+            if (dM) desc = dM[1].trim();
+
+            let canonFile = '';
+            try {
+                const u = new URL(canonical);
+                const seg = (u.pathname || '').replace(/\/+$/, '').split('/');
+                canonFile = decodeURIComponent(seg[seg.length - 1] || '').toLowerCase();
+            } catch (e) { }
+
+            let textDreaptaInner = '';
+            const tdRe = /<td\b[^>]*\bclass\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/td>/gi;
+            let m;
+            let best = '';
+            while ((m = tdRe.exec(html)) !== null) {
+                if (!/\btext_dreapta\b/i.test(m[1])) continue;
+                const inner = m[2].trim();
+                if (/\bOn\s+/i.test(inner) && (/category\s+tag|\bexternal\b|rel\s*=\s*["'][^"']*category/i.test(inner) || /\.html\b/i.test(inner))) {
+                    if (inner.length >= best.length) best = inner;
+                }
+            }
+            if (!best) {
+                tdRe.lastIndex = 0;
+                while ((m = tdRe.exec(html)) !== null) {
+                    if (!/\btext_dreapta\b/i.test(m[1])) continue;
+                    const inner = m[2].trim();
+                    if (/\bOn\s+/i.test(inner)) { best = inner; break; }
+                }
+            }
+            textDreaptaInner = best;
+            if (!textDreaptaInner) return { ok: false, msg: 'Nu am găsit &lt;td class=&quot;text_dreapta&quot;&gt; cu „On …” în articol.' };
+
+            let categoryFile = '';
+            const linkRe = /<a\b[^>]*\bhref\s*=\s*["']([^"']+)["']/gi;
+            let lm;
+            while ((lm = linkRe.exec(textDreaptaInner)) !== null) {
+                const href = lm[1].trim();
+                let fn = '';
+                try {
+                    const u = new URL(href, canonical);
+                    fn = decodeURIComponent((u.pathname || '').split('/').pop() || '').toLowerCase();
+                } catch (e) {
+                    fn = href.split('/').pop().split('?')[0].toLowerCase();
+                }
+                if (!fn || !/\.html?$/i.test(fn)) continue;
+                if (canonFile && fn === canonFile) continue;
+                categoryFile = href.split('/').pop().split('?')[0];
+                if (!/^[a-z0-9._-]+\.html?$/i.test(categoryFile)) {
+                    try {
+                        categoryFile = decodeURIComponent((new URL(href, canonical).pathname || '').split('/').pop() || '');
+                    } catch (e2) { }
+                }
+                break;
+            }
+            if (!categoryFile) return { ok: false, msg: 'Nu am putut deduce pagina categoriei (link .html în text_dreapta, ≠ articol).' };
+
+            let homeOrigin = 'https://neculaifantanaru.com/';
+            try { homeOrigin = new URL(canonical).origin + '/'; } catch (e) { }
+
+            const escDesc = desc.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const escTitle = title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+            const block =
+                '    <table width="601" border="0">\n' +
+                '          <tbody><tr>\n' +
+                '            <td><span class="den_articol"><a href="' + canonical + '" class="linkMare">' + escTitle + '</a></span></td>\n' +
+                '          </tr>\n' +
+                '          <tr>\n' +
+                '            <td class="text_dreapta">' + textDreaptaInner + '</td>\n' +
+                '          </tr>\n' +
+                '        </tbody>\n' +
+                '</table>\n' +
+                '        <p class="text_obisnuit2"><em>' + escDesc + '</em></p>\n' +
+                '        <table width="552" border="0">\n' +
+                '          <tbody><tr>\n' +
+                '            <td width="552"><div align="right" id="external2"><a href="' + canonical + '">citește mai departe </a><a href="' + homeOrigin + '" title=""><img src="Arrow3_black_5x7.gif" alt="" width="5" height="7" class="arrow"></a></div>\n' +
+                '</td>\n' +
+                '          </tr>\n' +
+                '        </tbody>\n' +
+                '</table>\n' +
+                '\t\t<p class="text_obisnuit"></p>';
+
+            return { ok: true, block: block, categoryFile: categoryFile };
+        }
+
+        /**
+         * Inserează / actualizează bloc în pagină categorie: ordine după dată (cel mai nou primul),
+         * fără dubluri (același titlu+dat URL ca lista index).
+         */
+        function mergeCategoryBlockIntoCategoryHtml(categoryHtml, blockHtml) {
+            const bounds = locateIndexCategorySectionBounds(categoryHtml);
+            if (!bounds.ok) return { ok: false, msg: bounds.msg };
+            let htmlWork = categoryHtml;
+            let blocks = enumerateIndexCategoryBlocks(htmlWork, bounds.divEndGlobal, bounds.regionEnd);
+            const sigNew = articleSignatureFromBlock(blockHtml);
+            const keyNew = normalizeArticleKeyFromBlock(blockHtml);
+            const newTs = parseCategoryArticleLineDate(blockHtml);
+
+            const removeSegs = blocks.filter(function (b) {
+                if (sigNew && articleSignatureFromBlock(b.block) === sigNew) return true;
+                if (keyNew && normalizeArticleKeyFromBlock(b.block) === keyNew) return true;
+                return false;
+            });
+            removeSegs.sort(function (a, b) { return b.start - a.start; });
+            removeSegs.forEach(function (seg) {
+                htmlWork = htmlWork.slice(0, seg.start) + htmlWork.slice(seg.end);
+            });
+
+            const bounds2 = locateIndexCategorySectionBounds(htmlWork);
+            if (!bounds2.ok) return { ok: false, msg: bounds2.msg };
+            const blocks2 = enumerateIndexCategoryBlocks(htmlWork, bounds2.divEndGlobal, bounds2.regionEnd);
+
+            const compactNew = compactArticleHtmlWs(blockHtml);
+            for (let i = 0; i < blocks2.length; i++) {
+                if (compactArticleHtmlWs(blocks2[i].block) === compactNew) {
+                    return {
+                        ok: true,
+                        html: htmlWork,
+                        action: 'skip',
+                        msg: 'Articolul este deja în categorie (același text).'
+                    };
+                }
+            }
+
+            let insertPos;
+            if (newTs === null) {
+                insertPos = getInsertPosAfterCategoryDiv(htmlWork, bounds2.divEndGlobal);
+            } else {
+                let found = false;
+                for (let i = 0; i < blocks2.length; i++) {
+                    const bts = parseCategoryArticleLineDate(blocks2[i].block);
+                    if (bts !== null && bts < newTs) {
+                        insertPos = blocks2[i].start;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    if (blocks2.length === 0) {
+                        insertPos = getInsertPosAfterCategoryDiv(htmlWork, bounds2.divEndGlobal);
+                    } else {
+                        insertPos = blocks2[blocks2.length - 1].end;
+                    }
+                }
+            }
+
+            const raw = htmlWork.slice(0, insertPos) + blockHtml + htmlWork.slice(insertPos);
+            const action = removeSegs.length ? 'move' : 'insert';
+            const msg = removeSegs.length
+                ? 'Instanță reordonată în categorie (după dată).'
+                : 'Instanță adăugată în categorie (după dată).';
+            return {
+                ok: true,
+                html: normalizeBreakAfterTextObisnuitBeforeTable(raw),
+                action: action,
+                msg: msg
             };
         }
 
@@ -3437,18 +3689,26 @@ if (isset($_GET['action'])) {
                 return;
             }
             if (currentFile && normPathLoose(currentFile) === normPathLoose(TO_INDEX_HTML_PATH)) {
-                toast('Ești în index.html; deschide o pagină de categorie (ex. leadership-real.html).');
+                toast('Ești în index.html; deschide articolul (.html) sau o pagină categorie.');
                 return;
             }
             const src = editor.getValue();
-            if (src.indexOf('<!-- ARTICOL CATEGORIE START -->') === -1) {
-                toast('Pagina nu are marcaj categorie (ARTICOL CATEGORIE START).');
-                return;
-            }
-            const block = extractFirstCategoryArticleFromSource(src);
-            if (!block) {
-                toast('Nu am găsit niciun articol în secțiunea categorie (între ARTICOL CATEGORIE START / FINAL).');
-                return;
+            const marker = '<!-- ARTICOL CATEGORIE START -->';
+            let block;
+            if (src.indexOf(marker) === -1) {
+                const built = buildCategoryBlockFromArticleHtml(src);
+                if (!built.ok) {
+                    toast('To-INDEX: ' + built.msg);
+                    return;
+                }
+                block = built.block;
+            } else {
+                const blockEx = extractFirstCategoryArticleFromSource(src);
+                if (!blockEx) {
+                    toast('Nu am găsit niciun articol în secțiunea categorie (între ARTICOL CATEGORIE START / FINAL).');
+                    return;
+                }
+                block = blockEx;
             }
             const apiBase = window.location.pathname.replace(/[#?].*$/, '');
             toast('To-INDEX: citesc index.html…');
@@ -4080,11 +4340,136 @@ if (isset($_GET['action'])) {
                 'Alt-A': cm => { cm.replaceSelection('â'); },
             });
 
+            // ── Paste into empty / selected <p> blocks (code editor) ──
+            // Rich HTML / entity-encoded tags from the clipboard (e.g. DeepSeek) are
+            // reduced to plain text, then wrapped only in <p class="text_obisnuit">…</p>.
+            function mergePasteIntoTextObisnuitParagraph(cm, change) {
+                if (typeof isCurrentFileHtml !== 'function' || !isCurrentFileHtml()) return false;
+                if (change.origin !== 'paste') return false;
+                const fromIdx = cm.indexFromPos(change.from);
+                const toIdx = cm.indexFromPos(change.to);
+                const src = cm.getValue();
+
+                function clipToPlainMultiline(text) {
+                    let t = Array.isArray(text) ? text.join('\n') : String(text);
+                    // Entity-encoded tags (&lt;p …&gt;) → decode, then strip markup to plain text only.
+                    if (/&(?:#(?:x[\da-f]+|\d+)|[a-z][a-z0-9]*);/i.test(t)) {
+                        const ta = document.createElement('textarea');
+                        ta.innerHTML = t;
+                        t = ta.value;
+                    }
+                    if (/<[a-z!?\/]/i.test(t)) {
+                        const tmp = document.createElement('div');
+                        tmp.innerHTML = t;
+                        t = tmp.textContent || tmp.innerText || '';
+                    }
+                    return t.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+                }
+                function escapeHtmlText(s) {
+                    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                }
+                function normalizeParagraphChunks(plain, minBlocksHint) {
+                    let t = plain.replace(/\u00a0/g, ' ').trim();
+                    if (!t) return [];
+                    let parts = t.split(/\n\s*\n+/).map(function (p) {
+                        return p.replace(/ {2,}/g, ' ').trim();
+                    }).filter(Boolean);
+                    if (parts.length === 1 && minBlocksHint >= 2 && /\n/.test(t)) {
+                        var lines = t.split('\n').map(function (l) {
+                            return l.replace(/ {2,}/g, ' ').trim();
+                        }).filter(Boolean);
+                        if (lines.length >= 2) parts = lines;
+                    }
+                    return parts;
+                }
+                /** Whitespace + optional second empty <p class="text_obisnuit"></p> (duplicate placeholder). */
+                function lenFollowingEmptyTextObisnuitSibling(html, idx) {
+                    const m = html.slice(idx).match(/^\s*<p\s+class\s*=\s*["']text_obisnuit["']\s*>\s*<\/p>/i);
+                    return m ? m[0].length : 0;
+                }
+
+                // Non-empty selection that looks like one or more <p>…</p> → replace with plain text_obisnuit blocks only.
+                if (fromIdx < toIdx) {
+                    const sel = src.slice(fromIdx, toIdx);
+                    const nPOpen = (sel.match(/<p\b/gi) || []).length;
+                    const nPClose = (sel.match(/<\/p>/gi) || []).length;
+                    const looksLikeParagraphReplace = (nPOpen >= 1 && nPClose >= 1) || nPOpen >= 2 || nPClose >= 2;
+                    if (looksLikeParagraphReplace) {
+                        const rawMulti = clipToPlainMultiline(change.text);
+                        const parts = normalizeParagraphChunks(rawMulti, Math.max(1, nPOpen, nPClose));
+                        if (!parts.length) return false;
+                        const lineStart = src.lastIndexOf('\n', fromIdx - 1) + 1;
+                        const indent = (src.slice(lineStart).match(/^(\s*)/) || ['', ''])[1];
+                        const blocks = parts.map(function (part) {
+                            return indent + '<p class="text_obisnuit">' + escapeHtmlText(part) + '</p>';
+                        }).join('\n');
+                        change.cancel();
+                        cm.operation(function () {
+                            cm.replaceRange(blocks, cm.posFromIndex(fromIdx), cm.posFromIndex(toIdx));
+                            cm.setCursor(cm.posFromIndex(fromIdx + blocks.length));
+                        });
+                        return true;
+                    }
+                }
+
+                let raw = clipToPlainMultiline(change.text);
+                raw = raw.replace(/\n/g, ' ').replace(/ {2,}/g, ' ').trim();
+                if (!raw) return false;
+                const esc = escapeHtmlText(raw);
+                const openRe = /<p\s+class\s*=\s*["']text_obisnuit["']\s*>/gi;
+                let matchB = null;
+                let m;
+                while ((m = openRe.exec(src)) !== null) {
+                    const oStart = m.index;
+                    const oEnd = m.index + m[0].length;
+                    const closeIdx = src.indexOf('</p>', oEnd);
+                    if (closeIdx === -1) continue;
+                    const inner = src.slice(oEnd, closeIdx);
+                    if (!/^\s*$/.test(inner)) continue;
+                    if (fromIdx < oEnd || fromIdx >= closeIdx) continue;
+                    if (toIdx < oEnd || toIdx > closeIdx) continue;
+                    matchB = { oStart: oStart, closeEnd: closeIdx + 5 };
+                }
+                const insertFull = '<p class="text_obisnuit">' + esc + '</p>';
+                if (matchB) {
+                    const closeEndExtended = matchB.closeEnd +
+                        lenFollowingEmptyTextObisnuitSibling(src, matchB.closeEnd);
+                    change.cancel();
+                    cm.operation(() => {
+                        cm.replaceRange(insertFull,
+                            cm.posFromIndex(matchB.oStart),
+                            cm.posFromIndex(closeEndExtended));
+                        cm.setCursor(cm.posFromIndex(matchB.oStart + insertFull.length));
+                    });
+                    return true;
+                }
+                const before = src.slice(0, fromIdx);
+                // Include newlines/tabs after </p> — cursor is often on the next line before the next <p>.
+                const emptyPSuffix = /<p\s+class\s*=\s*["']text_obisnuit["']\s*>\s*<\/p>\s*$/i;
+                const mA = before.match(emptyPSuffix);
+                if (mA) {
+                    const replStart = fromIdx - mA[0].length;
+                    const pasteEnd = toIdx + lenFollowingEmptyTextObisnuitSibling(src, toIdx);
+                    change.cancel();
+                    cm.operation(() => {
+                        cm.replaceRange(insertFull,
+                            cm.posFromIndex(replStart),
+                            cm.posFromIndex(pasteEnd));
+                        cm.setCursor(cm.posFromIndex(replStart + insertFull.length));
+                    });
+                    return true;
+                }
+                return false;
+            }
+
             // ── SASA code-side interception ──
             // When SASA is active and user types/deletes/pastes in the CODE editor,
             // cancel CodeMirror's default change, manually replace the SASA range,
             // and position the cursor between markers — all in one atomic operation.
             editor.on('beforeChange', (cm, change) => {
+                if (!sasaSelectionActive && mergePasteIntoTextObisnuitParagraph(cm, change)) {
+                    return;
+                }
                 if (!sasaSelectionActive) return;
                 const o = change.origin;
                 if (o !== '+input' && o !== '+delete' && o !== 'paste' && o !== 'cut') return;
@@ -5033,16 +5418,71 @@ if (isset($_GET['action'])) {
                 // + insertNode. deleteContents preserves parent structure (just empties
                 // selected content), unlike execCommand which restructures the DOM.
                 else {
+                    // Collect all <p> elements touched by the selection BEFORE deleting,
+                    // so we can clean up empty shells afterwards.
+                    const touchedPs = [];
+                    (function collectTouchedParagraphs() {
+                        const container = range.commonAncestorContainer;
+                        const root = (container.nodeType === Node.ELEMENT_NODE) ? container : container.parentNode;
+                        if (!root) return;
+                        const allPs = root.querySelectorAll ? root.querySelectorAll('p') : [];
+                        for (let i = 0; i < allPs.length; i++) {
+                            if (sel.containsNode(allPs[i], true)) touchedPs.push(allPs[i]);
+                        }
+                    })();
+
                     range.deleteContents();
                     const textNode = doc.createTextNode(text);
                     range.insertNode(textNode);
-                    // Merge adjacent text nodes so we don't leave fragments
                     if (textNode.parentNode) textNode.parentNode.normalize();
-                    const newRange = doc.createRange();
-                    newRange.setStartAfter(textNode);
-                    newRange.setEndAfter(textNode);
-                    sel.removeAllRanges();
-                    sel.addRange(newRange);
+
+                    // If text ended up outside a <p> (direct child of body / structural div),
+                    // wrap it in <p class="text_obisnuit"> and remove empty <p> remnants.
+                    const parent = textNode.parentNode;
+                    const isOrphan = parent && (
+                        parent === doc.body ||
+                        (parent.nodeName === 'DIV' && parent.getAttribute('align'))
+                    );
+                    if (isOrphan) {
+                        const wrapper = doc.createElement('p');
+                        wrapper.className = 'text_obisnuit';
+                        parent.insertBefore(wrapper, textNode);
+                        wrapper.appendChild(textNode);
+                        // Remove empty <p> siblings left by deleteContents
+                        for (let i = touchedPs.length - 1; i >= 0; i--) {
+                            const p = touchedPs[i];
+                            if (p !== wrapper && p.parentNode &&
+                                (!p.textContent || !p.textContent.trim())) {
+                                p.parentNode.removeChild(p);
+                            }
+                        }
+                        // Also sweep any remaining adjacent empty <p> elements
+                        let sib = wrapper.previousElementSibling;
+                        while (sib && sib.nodeName === 'P' &&
+                               (!sib.textContent || !sib.textContent.trim())) {
+                            const prev = sib.previousElementSibling;
+                            sib.parentNode.removeChild(sib);
+                            sib = prev;
+                        }
+                        sib = wrapper.nextElementSibling;
+                        while (sib && sib.nodeName === 'P' &&
+                               (!sib.textContent || !sib.textContent.trim())) {
+                            const nxt = sib.nextElementSibling;
+                            sib.parentNode.removeChild(sib);
+                            sib = nxt;
+                        }
+                        const newRange = doc.createRange();
+                        newRange.setStartAfter(textNode);
+                        newRange.setEndAfter(textNode);
+                        sel.removeAllRanges();
+                        sel.addRange(newRange);
+                    } else {
+                        const newRange = doc.createRange();
+                        newRange.setStartAfter(textNode);
+                        newRange.setEndAfter(textNode);
+                        sel.removeAllRanges();
+                        sel.addRange(newRange);
+                    }
                 }
                 clearTimeout(designInputDebounceTimer);
                 designInputDebounceTimer = setTimeout(syncFromDesign, 80);
