@@ -1839,6 +1839,100 @@ if (isset($_GET['action'])) {
         let tabIdCounter = 0;
         let _isRestoringTab = false;
 
+        function extractMetaDescriptionFromHtml(html) {
+            const dM = String(html || '').match(/<meta\s+name\s*=\s*["']description["']\s+content\s*=\s*["']([^"']*)["']/i)
+                || String(html || '').match(/<meta\s+content\s*=\s*["']([^"']*)["']\s+name\s*=\s*["']description["']/i);
+            return dM ? dM[1].trim() : '';
+        }
+
+        function normalizeDescCompare(s) {
+            return String(s || '').replace(/\s+/g, ' ').trim();
+        }
+
+        /** Conținut text din interiorul <em> (fără alte tag-uri), cu entități decode simplu. */
+        function plainTextFromEmInnerHtml(inner) {
+            if (inner == null) return '';
+            var x = String(inner);
+            x = x.replace(/<br\s*\/?>/gi, '\n').replace(/<\/?(p|div)\b[^>]*>/gi, '\n');
+            x = x.replace(/<[^>]+>/g, '');
+            try {
+                var ta = document.createElement('textarea');
+                ta.innerHTML = x.trim();
+                x = ta.value;
+            } catch (e1) {
+                x = x.replace(/&nbsp;/gi, ' ')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&#(\d+);/g, function (_, n) { return String.fromCharCode(parseInt(n, 10)); })
+                    .replace(/&#x([0-9a-f]+);/gi, function (_, h) { return String.fromCharCode(parseInt(h, 16)); });
+            }
+            return x.trim();
+        }
+
+        /**
+         * Textul afișat în listă (categorie) corespunde, în articole, de obicei paragrafului
+         * <p class="text_obisnuit2"><em>…</em></p> de după <!-- SASA-1 --> (nu neapărat meta).
+         */
+        function extractArticleSasaTeaserPlain(html) {
+            const norm = String(html || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            const sasaRe = /<!--\s*SASA-1\s*-->/i;
+            const mSasa = sasaRe.exec(norm);
+            const slice = mSasa ? norm.slice(mSasa.index + mSasa[0].length) : norm;
+            const m = slice.match(/<p\b[^>]*\bclass\s*=\s*["'][^"']*\btext_obisnuit2\b[^"']*["'][^>]*>[\s\S]*?<em\b[^>]*>([\s\S]*?)<\/em>[\s\S]*?<\/p>/i);
+            if (!m) return null;
+            return plainTextFromEmInnerHtml(m[1]);
+        }
+
+        function getCategorySyncDescriptionFromArticleHtml(html) {
+            var teaser = extractArticleSasaTeaserPlain(html);
+            if (teaser != null && teaser !== '') return teaser;
+            return extractMetaDescriptionFromHtml(html);
+        }
+
+        /** Pagină listă categorie/index (are cel puțin un bloc articol în zona listei), nu articol izolat. */
+        function isHtmlCategoryListingPage(html) {
+            var reg = findCategoryListRegion(html);
+            if (!reg.ok) return false;
+            return countCategoryListBlocks(html) >= 1;
+        }
+
+        /** Articol: are teaser SASA + em și nu e pagină de listă categorie. */
+        function isArticlePageForSasaMetaSync(html) {
+            var t = extractArticleSasaTeaserPlain(html);
+            if (t == null || t === '') return false;
+            return !isHtmlCategoryListingPage(html);
+        }
+
+        function escapeMetaDescriptionAttrValue(s) {
+            return String(s || '')
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\r?\n/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        /** Actualizează <meta name="description" content="…"> din textul din <em> după SASA-1. Fără tag → return html nemodificat. */
+        function applySasaTeaserToMetaDescription(html) {
+            var teaser = extractArticleSasaTeaserPlain(html);
+            if (teaser == null || teaser === '') return html;
+            var esc = escapeMetaDescriptionAttrValue(teaser);
+            var out = String(html);
+            var re1 = /(<meta\s+name\s*=\s*["']description["']\s+content\s*=\s*["'])([^"']*)(["'])/i;
+            var re2 = /(<meta\s+content\s*=\s*["'])([^"']*)(["']\s+name\s*=\s*["']description["'])/i;
+            if (re1.test(out)) {
+                return out.replace(re1, function (_, a, _old, c) { return a + esc + c; });
+            }
+            if (re2.test(out)) {
+                return out.replace(re2, function (_, a, _old, c) { return a + esc + c; });
+            }
+            return html;
+        }
+
         function createTabState(opts) {
             opts = opts || {};
             tabIdCounter++;
@@ -1864,7 +1958,10 @@ if (isset($_GET['action'])) {
                 designUndoStack: [],
                 designRedoStack: [],
                 lastDesignSnapshot: null,
-                designCleanBodyHtml: null
+                designCleanBodyHtml: null,
+                categorySyncDescriptionBaseline: getCategorySyncDescriptionFromArticleHtml(_oc),
+                linkedCategoryPath: null,
+                linkedArticleKey: null
             };
         }
 
@@ -2097,6 +2194,10 @@ if (isset($_GET['action'])) {
                 browserPanelOpen = false;
                 if (btnGoogle) btnGoogle.classList.remove('active');
                 restoreTabState(tab);
+                if (typeof refreshTabLinkedCategory === 'function') refreshTabLinkedCategory(tab);
+                if (typeof reconcileLinkedCategoryTeaserWithArticle === 'function') {
+                    reconcileLinkedCategoryTeaserWithArticle(tab, tab.editorContent, { context: 'focus', silent: true }).catch(function () { });
+                }
             }
             renderTabs();
         }
@@ -2154,12 +2255,29 @@ if (isset($_GET['action'])) {
             }
 
             var tabDirty = (tabId === activeTabId) ? isDirty : tab.isDirty;
+            var skipReconcileCategoryOnClose = false;
+            var htmlForCategorySync = tab.editorContent;
             if (tabDirty) {
                 var choice = await showSaveConfirm('Fisierul "' + tab.tabLabel + '" are modificari nesalvate. Salvezi inainte de inchidere?');
                 if (choice === 'cancel') return;
                 if (choice === 'save') {
                     if (tabId !== activeTabId) switchToTab(tabId);
                     await saveFile();
+                    skipReconcileCategoryOnClose = true;
+                } else {
+                    htmlForCategorySync = tab.originalContent;
+                }
+            }
+            if (tab.type !== 'browser' && tab.filePath && !skipReconcileCategoryOnClose) {
+                var fpl = String(tab.filePath).toLowerCase();
+                if ((fpl.endsWith('.html') || fpl.endsWith('.htm')) && typeof reconcileLinkedCategoryTeaserWithArticle === 'function') {
+                    var _prevEc = tab.editorContent;
+                    tab.editorContent = htmlForCategorySync;
+                    if (typeof refreshTabLinkedCategory === 'function') refreshTabLinkedCategory(tab);
+                    try {
+                        await reconcileLinkedCategoryTeaserWithArticle(tab, htmlForCategorySync, { context: 'close', silent: true });
+                    } catch (eCatClose) { console.error(eCatClose); }
+                    tab.editorContent = _prevEc;
                 }
             }
 
@@ -3134,6 +3252,51 @@ if (isset($_GET['action'])) {
 
         const CATEGORY_ARTICLE_BLOCK_RE = /^(\s*)(<table\s[^>]*\bwidth\s*=\s*["'][^"']+["'][^>]*>[\s\S]*?<\/table>\s*<p\s+class\s*=\s*["']text_obisnuit2["'][^>]*>[\s\S]*?<\/p>\s*<table\s[^>]*\bwidth\s*=\s*["'][^"']+["'][^>]*>[\s\S]*?<\/table>\s*<p\s+class\s*=\s*["']text_obisnuit["'][^>]*>\s*<\/p>)/i;
 
+        const MARKER_CATEGORIE_START = '<!-- ARTICOL CATEGORIE START -->';
+        const MARKER_CATEGORIE_FINAL = '<!-- ARTICOL CATEGORIE FINAL -->';
+        const MARKER_ARTICOL_START = '<!-- ARTICOL START -->';
+        const MARKER_ARTICOL_FINAL = '<!-- ARTICOL FINAL -->';
+        const MARKER_SASA1 = '<!-- SASA-1 -->';
+
+        /**
+         * Zona listelor de articole: fie RO (CATEGORIE START/FINAL), fie EN (ARTICOL START … SASA-1 sau ARTICOL FINAL).
+         */
+        function findCategoryListRegion(html) {
+            const h = String(html || '');
+            let mi = h.indexOf(MARKER_CATEGORIE_START);
+            let startMarker = MARKER_CATEGORIE_START;
+            if (mi === -1) {
+                mi = h.indexOf(MARKER_ARTICOL_START);
+                startMarker = MARKER_ARTICOL_START;
+            }
+            if (mi === -1) {
+                return { ok: false, msg: 'Lipsește <!-- ARTICOL CATEGORIE START --> sau <!-- ARTICOL START -->.' };
+            }
+            const afterMarker = h.slice(mi + startMarker.length);
+            const divMatch = afterMarker.match(/^\s*<div\s+align\s*=\s*["']?justify["']?\s*>/i);
+            if (!divMatch) {
+                return { ok: false, msg: 'Lipsește &lt;div align=&quot;justify&quot;&gt; după marcajul listei.' };
+            }
+            const divEndGlobal = mi + startMarker.length + divMatch[0].length;
+            let regionEnd = h.length;
+            if (startMarker === MARKER_CATEGORIE_START) {
+                const fi = h.indexOf(MARKER_CATEGORIE_FINAL, divEndGlobal);
+                if (fi !== -1) regionEnd = fi;
+            } else {
+                const sasa1 = h.indexOf(MARKER_SASA1, divEndGlobal);
+                const fi = h.indexOf(MARKER_ARTICOL_FINAL, divEndGlobal);
+                if (sasa1 !== -1 && (fi === -1 || sasa1 < fi)) regionEnd = sasa1;
+                else if (fi !== -1) regionEnd = fi;
+            }
+            return { ok: true, divEndGlobal: divEndGlobal, regionEnd: regionEnd, startMarker: startMarker };
+        }
+
+        function countCategoryListBlocks(html) {
+            const reg = findCategoryListRegion(html);
+            if (!reg.ok) return 0;
+            return enumerateIndexCategoryBlocks(html, reg.divEndGlobal, reg.regionEnd).length;
+        }
+
         // Între articole: nu lipi </p> de <table>; rând nou + 4 spații înainte de <table>.
         function normalizeBreakAfterTextObisnuitBeforeTable(html) {
             return String(html || '').replace(
@@ -3152,20 +3315,13 @@ if (isset($_GET['action'])) {
                 toast('ADD-CAT este doar pentru fișiere HTML.');
                 return;
             }
-            const marker = '<!-- ARTICOL CATEGORIE START -->';
             const src = editor.getValue();
-            if (src.indexOf(marker) === -1) {
-                toast('Lipsește marcajul categoriei (ARTICOL CATEGORIE START).');
+            const reg = findCategoryListRegion(src);
+            if (!reg.ok) {
+                toast(reg.msg);
                 return;
             }
-            const mi = src.indexOf(marker);
-            const afterMarker = src.slice(mi + marker.length);
-            const divMatch = afterMarker.match(/^\s*<div\s+align\s*=\s*["']?justify["']?\s*>/i);
-            if (!divMatch) {
-                toast('Nu am găsit &lt;div align=&quot;justify&quot;&gt; după marcajul categoriei.');
-                return;
-            }
-            const divEndGlobal = mi + marker.length + divMatch[0].length;
+            const divEndGlobal = reg.divEndGlobal;
             const afterDiv = src.slice(divEndGlobal);
             const bm = afterDiv.match(CATEGORY_ARTICLE_BLOCK_RE);
             if (!bm) {
@@ -3194,8 +3350,9 @@ if (isset($_GET['action'])) {
                 return;
             }
             const src = editor.getValue();
-            const marker = '<!-- ARTICOL CATEGORIE START -->';
-            if (src.indexOf(marker) !== -1) {
+            const isRoCategoryMarker = src.indexOf(MARKER_CATEGORIE_START) !== -1;
+            const listBlockCount = countCategoryListBlocks(src);
+            if (isRoCategoryMarker || (src.indexOf(MARKER_ARTICOL_START) !== -1 && listBlockCount >= 1)) {
                 addCatDuplicateFirstArticle();
                 return;
             }
@@ -3249,8 +3406,16 @@ if (isset($_GET['action'])) {
             }
         }
 
-        // Țintă fixă: lista articolelor de pe homepage RO (categorii).
-        const TO_INDEX_HTML_PATH = 'e:/Carte/BB/17 - Site Leadership/Principal/ro/index.html';
+        // Homepage listă articole: ro/ sau en/ după folderul curent.
+        const TO_INDEX_RO_HTML_PATH = 'e:/Carte/BB/17 - Site Leadership/Principal/ro/index.html';
+        const TO_INDEX_EN_HTML_PATH = 'e:/Carte/BB/17 - Site Leadership/Principal/en/index.html';
+
+        function getToIndexPathForFile(filePath) {
+            if (!filePath) return TO_INDEX_RO_HTML_PATH;
+            const norm = String(filePath).replace(/\\/g, '/').toLowerCase();
+            if (norm.indexOf('/principal/en/') !== -1) return TO_INDEX_EN_HTML_PATH;
+            return TO_INDEX_RO_HTML_PATH;
+        }
 
         const RO_MONTH_TO_INDEX = { ianuarie: 0, februarie: 1, martie: 2, aprilie: 3, mai: 4, iunie: 5, iulie: 6, august: 7, septembrie: 8, octombrie: 9, noiembrie: 10, decembrie: 11 };
         const EN_MONTH_TO_INDEX = { january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7, september: 8, october: 9, november: 10, december: 11 };
@@ -3292,17 +3457,10 @@ if (isset($_GET['action'])) {
 
         // START…FINAL: articolul cu data calendaristică cea mai mare (ex. Martie 2026 > Ianuarie 2011). Fără date valide → primul bloc.
         function extractFirstCategoryArticleFromSource(html) {
-            const marker = '<!-- ARTICOL CATEGORIE START -->';
-            const finalMarker = '<!-- ARTICOL CATEGORIE FINAL -->';
-            const mi = html.indexOf(marker);
-            if (mi === -1) return null;
-            const afterMarker = html.slice(mi + marker.length);
-            const divMatch = afterMarker.match(/^\s*<div\s+align\s*=\s*["']?justify["']?\s*>/i);
-            if (!divMatch) return null;
-            const divEnd = mi + marker.length + divMatch[0].length;
-            let regionEnd = html.length;
-            const fi = html.indexOf(finalMarker, divEnd);
-            if (fi !== -1) regionEnd = fi;
+            const reg = findCategoryListRegion(html);
+            if (!reg.ok) return null;
+            const divEnd = reg.divEndGlobal;
+            const regionEnd = reg.regionEnd;
             const region = html.slice(divEnd, regionEnd);
             const scored = [];
             let firstFallback = null;
@@ -3329,18 +3487,11 @@ if (isset($_GET['action'])) {
         }
 
         function locateIndexCategorySectionBounds(indexHtml) {
-            const marker = '<!-- ARTICOL CATEGORIE START -->';
-            const finalMarker = '<!-- ARTICOL CATEGORIE FINAL -->';
-            const mi = indexHtml.indexOf(marker);
-            if (mi === -1) return { ok: false, msg: 'În index.html lipsește <!-- ARTICOL CATEGORIE START -->.' };
-            const afterMarker = indexHtml.slice(mi + marker.length);
-            const divMatch = afterMarker.match(/^\s*<div\s+align\s*=\s*["']?justify["']?\s*>/i);
-            if (!divMatch) return { ok: false, msg: 'În index.html lipsește <div align="justify"> după marcajul categoriei.' };
-            const divEndGlobal = mi + marker.length + divMatch[0].length;
-            let regionEnd = indexHtml.length;
-            const fi = indexHtml.indexOf(finalMarker, divEndGlobal);
-            if (fi !== -1) regionEnd = fi;
-            return { ok: true, divEndGlobal, regionEnd };
+            const r = findCategoryListRegion(indexHtml);
+            if (!r.ok) {
+                return { ok: false, msg: 'În index lipsește secțiunea listei (ARTICOL CATEGORIE START sau ARTICOL START).' };
+            }
+            return { ok: true, divEndGlobal: r.divEndGlobal, regionEnd: r.regionEnd };
         }
 
         function locateIndexCategoryDivEnd(indexHtml) {
@@ -3426,11 +3577,27 @@ if (isset($_GET['action'])) {
             return divEndGlobal + (ws ? ws[1].length : 0);
         }
 
+        /** Înlocuiește spațiul gol între <div align="justify"> și punctul de inserare cu un singur \n + 4 spații (fără rânduri goale multiple). */
+        function collapseWhitespaceGapBeforeInsert(html, divEndGlobal, insertPos) {
+            if (insertPos <= divEndGlobal) return { html: html, insertPos: insertPos };
+            const gap = html.slice(divEndGlobal, insertPos);
+            if (!/^\s*$/.test(gap)) return { html: html, insertPos: insertPos };
+            const normalizedGap = '\n    ';
+            return {
+                html: html.slice(0, divEndGlobal) + normalizedGap + html.slice(insertPos),
+                insertPos: divEndGlobal + normalizedGap.length
+            };
+        }
+
         function insertBlockAfterIndexCategoryDiv(indexHtml, blockHtml) {
             const loc = locateIndexCategoryDivEnd(indexHtml);
             if (!loc.ok) return loc;
-            const insertPos = getInsertPosAfterCategoryDiv(indexHtml, loc.divEndGlobal);
-            const raw = indexHtml.slice(0, insertPos) + blockHtml + indexHtml.slice(insertPos);
+            const divEnd = loc.divEndGlobal;
+            let insertPos = getInsertPosAfterCategoryDiv(indexHtml, divEnd);
+            const collapsed = collapseWhitespaceGapBeforeInsert(indexHtml, divEnd, insertPos);
+            const htmlWork = collapsed.html;
+            insertPos = collapsed.insertPos;
+            const raw = htmlWork.slice(0, insertPos) + blockHtml + htmlWork.slice(insertPos);
             return {
                 ok: true,
                 html: normalizeBreakAfterTextObisnuitBeforeTable(raw)
@@ -3521,7 +3688,15 @@ if (isset($_GET['action'])) {
             if (!categoryFile) return { ok: false, msg: 'Nu am putut deduce pagina categoriei (link .html în text_dreapta, ≠ articol).' };
 
             let homeOrigin = 'https://neculaifantanaru.com/';
-            try { homeOrigin = new URL(canonical).origin + '/'; } catch (e) { }
+            try {
+                const u = new URL(canonical);
+                const p = (u.pathname || '').toLowerCase();
+                if (p.indexOf('/en/') === 0 || p === '/en' || p.indexOf('/en/') !== -1) {
+                    homeOrigin = u.origin + '/en/';
+                } else {
+                    homeOrigin = u.origin + '/';
+                }
+            } catch (e) { }
 
             const escDesc = desc.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             const escTitle = title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -3617,6 +3792,9 @@ if (isset($_GET['action'])) {
                 }
             }
 
+            const collapsed = collapseWhitespaceGapBeforeInsert(htmlWork, bounds2.divEndGlobal, insertPos);
+            htmlWork = collapsed.html;
+            insertPos = collapsed.insertPos;
             const raw = htmlWork.slice(0, insertPos) + blockHtml + htmlWork.slice(insertPos);
             const action = removeSegs.length ? 'move' : 'insert';
             const msg = removeSegs.length
@@ -3628,6 +3806,171 @@ if (isset($_GET['action'])) {
                 action: action,
                 msg: msg
             };
+        }
+
+        function resolveArticleLinkedCategory(filePath, html) {
+            const built = buildCategoryBlockFromArticleHtml(html);
+            if (!built.ok) return null;
+            const catPath = categoryPathBesideArticle(filePath, built.categoryFile);
+            if (normPathLoose(catPath) === normPathLoose(filePath)) return null;
+            return {
+                categoryPath: catPath,
+                articleKey: normalizeArticleKeyFromBlock(built.block)
+            };
+        }
+
+        function replaceCategoryTeaserForArticleKey(categoryHtml, articleKey, newPlainDescription) {
+            if (!articleKey) return { ok: true, html: categoryHtml, changed: false };
+            const bounds = findCategoryListRegion(categoryHtml);
+            if (!bounds.ok) return { ok: false, html: categoryHtml, changed: false };
+            const blocks = enumerateIndexCategoryBlocks(categoryHtml, bounds.divEndGlobal, bounds.regionEnd);
+            let target = null;
+            for (let i = 0; i < blocks.length; i++) {
+                if (normalizeArticleKeyFromBlock(blocks[i].block) === articleKey) {
+                    target = blocks[i];
+                    break;
+                }
+            }
+            if (!target) return { ok: true, html: categoryHtml, changed: false };
+            const emEsc = String(newPlainDescription || '')
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const newBlock = target.block.replace(
+                /(<p\b[^>]*\bclass\s*=\s*["']text_obisnuit2["'][^>]*>\s*<em[^>]*>)([\s\S]*?)(<\/em>\s*<\/p>)/i,
+                '$1' + emEsc + '$3'
+            );
+            if (newBlock === target.block) return { ok: true, html: categoryHtml, changed: false };
+            const out = categoryHtml.slice(0, target.start) + newBlock + categoryHtml.slice(target.end);
+            return { ok: true, html: normalizeBreakAfterTextObisnuitBeforeTable(out), changed: true };
+        }
+
+        /** Textul din <em> din blocul listă categorie pentru articolul cu același articleKey (normalizeArticleKeyFromBlock). */
+        function extractCategoryTeaserPlainForArticleKey(categoryHtml, articleKey) {
+            if (!articleKey) return null;
+            const bounds = findCategoryListRegion(categoryHtml);
+            if (!bounds.ok) return null;
+            const blocks = enumerateIndexCategoryBlocks(categoryHtml, bounds.divEndGlobal, bounds.regionEnd);
+            for (let i = 0; i < blocks.length; i++) {
+                if (normalizeArticleKeyFromBlock(blocks[i].block) !== articleKey) continue;
+                const m = blocks[i].block.match(/<p\b[^>]*\bclass\s*=\s*["'][^"']*\btext_obisnuit2\b[^"']*["'][^>]*>[\s\S]*?<em\b[^>]*>([\s\S]*?)<\/em>[\s\S]*?<\/p>/i);
+                if (!m) return '';
+                return plainTextFromEmInnerHtml(m[1]);
+            }
+            return null;
+        }
+
+        /**
+         * Articolul este sursa de adevăr: aliniază teaserul în pagina categorie și, dacă articolul apare în index,
+         * și în ro/index.html sau en/index.html (același articleKey). index e tratat silențios (fără toast la erori).
+         */
+        async function reconcileLinkedCategoryTeaserWithArticle(articleTab, articleHtml, opts) {
+            opts = opts || {};
+            if (!articleTab || articleTab.type === 'browser') return;
+            refreshTabLinkedCategory(articleTab);
+            const catPath = articleTab.linkedCategoryPath;
+            const aKey = articleTab.linkedArticleKey;
+            if (!catPath || !aKey) return;
+            const articleDesc = getCategorySyncDescriptionFromArticleHtml(articleHtml);
+            const apiBase = window.location.pathname.replace(/[#?].*$/, '');
+
+            async function syncListPageAtPath(listPath, isCategoryFile) {
+                if (!listPath) return;
+                try {
+                    const res = await fetch(apiBase + '?action=load&file=' + encodeURIComponent(listPath));
+                    const data = await res.json();
+                    if (!data.ok) {
+                        if (isCategoryFile && !opts.silent && opts.context !== 'focus') {
+                            toast('Categorie: nu pot citi fișierul pentru alinierea descrierii.');
+                        }
+                        return;
+                    }
+                    const listHtml = data.content || '';
+                    const curTeaser = extractCategoryTeaserPlainForArticleKey(listHtml, aKey);
+                    if (curTeaser === null) {
+                        if (isCategoryFile && !opts.silent && opts.context !== 'focus') {
+                            toast('Categorie: nu am găsit intrarea articolului în lista categorie.');
+                        }
+                        return;
+                    }
+                    if (normalizeDescCompare(articleDesc) === normalizeDescCompare(curTeaser)) return;
+                    const rep = replaceCategoryTeaserForArticleKey(listHtml, aKey, articleDesc);
+                    if (!rep.changed) {
+                        if (isCategoryFile && !opts.silent && normalizeDescCompare(articleDesc) !== normalizeDescCompare(curTeaser)) {
+                            toast('Categorie: nu am putut înlocui paragraful text_obisnuit2 pentru acest articol.');
+                        }
+                        return;
+                    }
+                    const body = new URLSearchParams();
+                    body.append('file', listPath);
+                    body.append('content', rep.html);
+                    const resSave = await fetch(apiBase + '?action=save', { method: 'POST', body: body });
+                    const saveData = await resSave.json();
+                    if (!saveData.ok) {
+                        if (isCategoryFile && !opts.silent) {
+                            toast('Categorie: nu pot salva descrierea aliniată la articol.');
+                        }
+                        return;
+                    }
+                    if (!opts.silent && isCategoryFile) {
+                        var msg = (opts.context === 'open')
+                            ? 'Descrierea din articol era diferită — am actualizat și salvat pagina categorie.'
+                            : (opts.context === 'save')
+                                ? 'Descrierea a fost sincronizată și în pagina categorie.'
+                                : 'Pagina categorie a fost aliniată la articol.';
+                        toast(msg);
+                    }
+                    var t = findTabByPath(listPath);
+                    if (t) {
+                        t.editorContent = rep.html;
+                        t.originalContent = rep.html;
+                        t.originalContentNorm = normalizeHtmlForCompare(rep.html);
+                        t.isDirty = false;
+                        if (t.id === activeTabId && editor) {
+                            isSyncFromDesign = true;
+                            editor.setValue(rep.html);
+                            isSyncFromDesign = false;
+                        }
+                        renderTabs();
+                    }
+                } catch (err) {
+                    console.error(err);
+                    if (isCategoryFile && !opts.silent) {
+                        toast('Eroare la alinierea descrierii articol → categorie.');
+                    }
+                }
+            }
+
+            await syncListPageAtPath(catPath, true);
+            var idxPath = getToIndexPathForFile(articleTab.filePath || '');
+            if (idxPath && normPathLoose(idxPath) !== normPathLoose(catPath)) {
+                await syncListPageAtPath(idxPath, false);
+            }
+        }
+
+        function refreshTabLinkedCategory(tab) {
+            if (!tab || tab.type === 'browser') {
+                if (tab) {
+                    tab.linkedCategoryPath = null;
+                    tab.linkedArticleKey = null;
+                }
+                return;
+            }
+            if (!tab.filePath) {
+                tab.linkedCategoryPath = null;
+                tab.linkedArticleKey = null;
+                return;
+            }
+            tab.linkedCategoryPath = null;
+            tab.linkedArticleKey = null;
+            const html = String(tab.editorContent || '').replace(/\r\n/g, '\n');
+            const r = resolveArticleLinkedCategory(tab.filePath, html);
+            if (r) {
+                tab.linkedCategoryPath = r.categoryPath;
+                tab.linkedArticleKey = r.articleKey;
+            }
+        }
+
+        async function syncLinkedCategoryDescriptionAfterArticleSave(tab, savedHtml) {
+            await reconcileLinkedCategoryTeaserWithArticle(tab, savedHtml, { context: 'save', silent: true });
         }
 
         // Fără dubluri în index: același titlu+dată, același URL articol (link den_articol / linkMare), sau același HTML compresat.
@@ -3698,32 +4041,34 @@ if (isset($_GET['action'])) {
                 toast('To-INDEX este doar pentru fișiere HTML.');
                 return;
             }
-            if (currentFile && normPathLoose(currentFile) === normPathLoose(TO_INDEX_HTML_PATH)) {
+            const indexPath = getToIndexPathForFile(currentFile);
+            if (currentFile && normPathLoose(currentFile) === normPathLoose(indexPath)) {
                 toast('Ești în index.html; deschide articolul (.html) sau o pagină categorie.');
                 return;
             }
             const src = editor.getValue();
-            const marker = '<!-- ARTICOL CATEGORIE START -->';
+            const hasCategMarker = src.indexOf(MARKER_CATEGORIE_START) !== -1;
+            const listCount = countCategoryListBlocks(src);
             let block;
-            if (src.indexOf(marker) === -1) {
+            if (hasCategMarker || listCount >= 1) {
+                const blockEx = extractFirstCategoryArticleFromSource(src);
+                if (!blockEx) {
+                    toast('Nu am găsit niciun articol în lista din pagina categorie / index.');
+                    return;
+                }
+                block = blockEx;
+            } else {
                 const built = buildCategoryBlockFromArticleHtml(src);
                 if (!built.ok) {
                     toast('To-INDEX: ' + built.msg);
                     return;
                 }
                 block = built.block;
-            } else {
-                const blockEx = extractFirstCategoryArticleFromSource(src);
-                if (!blockEx) {
-                    toast('Nu am găsit niciun articol în secțiunea categorie (între ARTICOL CATEGORIE START / FINAL).');
-                    return;
-                }
-                block = blockEx;
             }
             const apiBase = window.location.pathname.replace(/[#?].*$/, '');
-            toast('To-INDEX: citesc index.html…');
+            toast('To-INDEX: citesc index…');
             try {
-                const loadUrl = apiBase + '?action=load&file=' + encodeURIComponent(TO_INDEX_HTML_PATH);
+                const loadUrl = apiBase + '?action=load&file=' + encodeURIComponent(indexPath);
                 const res = await fetch(loadUrl);
                 const data = await res.json();
                 if (!data.ok) {
@@ -3741,7 +4086,7 @@ if (isset($_GET['action'])) {
                     return;
                 }
                 const body = new URLSearchParams();
-                body.append('file', TO_INDEX_HTML_PATH);
+                body.append('file', indexPath);
                 body.append('content', merged.html);
                 const resSave = await fetch(apiBase + '?action=save', { method: 'POST', body });
                 const saveData = await resSave.json();
@@ -5092,6 +5437,10 @@ if (isset($_GET['action'])) {
                 setViewMode(tab.viewMode);
                 renderTabs();
                 hideOverlay();
+                refreshTabLinkedCategory(tab);
+                try {
+                    await reconcileLinkedCategoryTeaserWithArticle(tab, tab.editorContent, { context: 'open', silent: true });
+                } catch (eSync) { console.error(eSync); }
             } catch (e) {
                 toast('Eroare la deschidere: ' + e.message);
             }
@@ -5122,12 +5471,23 @@ if (isset($_GET['action'])) {
                 currentFile = trimmed;
             }
             try {
+                var rawContent = editor.getValue();
+                var contentToSave = rawContent;
+                if (isCurrentFileHtml() && typeof isArticlePageForSasaMetaSync === 'function' &&
+                    isArticlePageForSasaMetaSync(rawContent) && typeof applySasaTeaserToMetaDescription === 'function') {
+                    contentToSave = applySasaTeaserToMetaDescription(rawContent);
+                }
                 const body = new URLSearchParams();
                 body.append('file', currentFile);
-                body.append('content', editor.getValue());
+                body.append('content', contentToSave);
                 const res = await fetch('?action=save', { method: 'POST', body });
                 const data = await res.json();
                 if (!data.ok) { toast('Eroare la salvare: ' + data.error); return; }
+                if (contentToSave !== rawContent) {
+                    isSyncFromDesign = true;
+                    editor.setValue(contentToSave);
+                    isSyncFromDesign = false;
+                }
                 isDirty = false;
                 if (activeTabId) {
                     var tab = null;
@@ -5135,11 +5495,18 @@ if (isset($_GET['action'])) {
                     if (tab) {
                         tab.isDirty = false;
                         tab.filePath = currentFile;
-                        tab.originalContent = editor.getValue();
+                        tab.originalContent = contentToSave;
                         tab.originalContentNorm = normalizeHtmlForCompare(tab.originalContent);
-                        tab.tabLabel = getTabLabel(editor.getValue(), currentFile);
-                        tab.fullTitle = getTabFullTitle(editor.getValue(), currentFile);
+                        tab.editorContent = tab.originalContent;
+                        tab.tabLabel = getTabLabel(contentToSave, currentFile);
+                        tab.fullTitle = getTabFullTitle(contentToSave, currentFile);
                         removeTabBackup(tab.id);
+                        if (typeof syncLinkedCategoryDescriptionAfterArticleSave === 'function' && tab.type !== 'browser' &&
+                            currentFile && isCurrentFileHtml()) {
+                            refreshTabLinkedCategory(tab);
+                            await syncLinkedCategoryDescriptionAfterArticleSave(tab, tab.originalContent);
+                        }
+                        tab.categorySyncDescriptionBaseline = getCategorySyncDescriptionFromArticleHtml(tab.originalContent);
                         renderTabs();
                     }
                 }
@@ -7191,6 +7558,10 @@ if (isset($_GET['action'])) {
                 renderTabs();
                 hideOverlay();
                 dropStatus('');
+                refreshTabLinkedCategory(tab);
+                try {
+                    await reconcileLinkedCategoryTeaserWithArticle(tab, tab.editorContent, { context: 'open', silent: true });
+                } catch (eSync) { console.error(eSync); }
             } catch (e) {
                 dropStatus('Eroare: ' + e.message, '#ef4444');
             }
@@ -7284,6 +7655,8 @@ if (isset($_GET['action'])) {
                                 if (tabs[ti].id === newTabId) {
                                     tabs[ti].filePath = resolvedPath;
                                     tabs[ti].tabLabel = getTabLabel(editor.getValue(), resolvedPath);
+                                    tabs[ti].editorContent = editor.getValue();
+                                    refreshTabLinkedCategory(tabs[ti]);
                                     break;
                                 }
                             }
