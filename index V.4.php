@@ -5632,6 +5632,47 @@ if (isset($_GET['action'])) {
             }
         }
 
+        // Remove accidental boundary <br> placeholders in normal paragraphs after Enter/Backspace.
+        // Keep internal/manual line breaks untouched; only trim leading/trailing <br> when text exists.
+        function cleanupParagraphBoundaryBrArtifacts(doc) {
+            if (!doc || !doc.body) return;
+            const ps = doc.querySelectorAll('p.text_obisnuit, p.text_obisnuit2');
+            for (let i = 0; i < ps.length; i++) {
+                const p = ps[i];
+                const hasMeaningfulText = (p.textContent || '').replace(/\u200B/g, '').trim().length > 0;
+                if (!hasMeaningfulText) continue;
+                // Trim leading boundary <br> (preserve user-typed spaces)
+                for (;;) {
+                    const fc = p.firstChild;
+                    if (!fc) break;
+                    if (fc.nodeType === Node.ELEMENT_NODE && fc.nodeName === 'BR') { p.removeChild(fc); continue; }
+                    break;
+                }
+                // Trim trailing boundary <br> (preserve user-typed spaces)
+                for (;;) {
+                    const lc = p.lastChild;
+                    if (!lc) break;
+                    if (lc.nodeType === Node.ELEMENT_NODE && lc.nodeName === 'BR') { p.removeChild(lc); continue; }
+                    break;
+                }
+            }
+        }
+
+        // In design mode, keep trailing spaces visible in editable article paragraphs.
+        // This avoids the "space exists in code but not visible in design" confusion.
+        function ensureDesignWhitespaceEditingStyle(doc) {
+            if (!doc || !doc.head) return;
+            if (doc.getElementById('designWhitespaceEditingStyle')) return;
+            const st = doc.createElement('style');
+            st.id = 'designWhitespaceEditingStyle';
+            st.textContent =
+                'body[contenteditable=\"true\"] p.text_obisnuit,' +
+                'body[contenteditable=\"true\"] p.text_obisnuit2 {' +
+                ' white-space: break-spaces !important;' +
+                '}';
+            doc.head.appendChild(st);
+        }
+
         function syncFromDesign() {
             if (isSyncFromCode) return;
             const iframe = document.getElementById('preview');
@@ -5643,6 +5684,7 @@ if (isset($_GET['action'])) {
             if (!bodyMatch) return;
             // Remove CROP highlight from DOM before reading so it never persists to code
             clearSasaDesignHighlight(doc);
+            cleanupParagraphBoundaryBrArtifacts(doc);
             // Replace &nbsp; with regular space in SASA region and h1.den_articol
             var rawInner = cleanNbspInHtml(doc.body.innerHTML);
             // Remove data-orig-class helper attribute so it never persists to saved code
@@ -5694,6 +5736,7 @@ if (isset($_GET['action'])) {
             const doc = iframe.contentDocument;
             if (!doc || !doc.body || !isCurrentFileHtml()) return;
             doc.body.contentEditable = 'true';
+            ensureDesignWhitespaceEditingStyle(doc);
             // Track that design panel was last focused (for Find scope in split mode)
             doc.addEventListener('mousedown', () => { _frDesignWasLastFocused = true; });
             // Block text drag-and-drop in design panel (prevents accidental moves)
@@ -5871,6 +5914,7 @@ if (isset($_GET['action'])) {
                 if (_imgClickMark) { _imgClickMark.clear(); _imgClickMark = null; }
                 // Collapse multiple spaces in design DOM text nodes (real-time cleanup)
                 collapseSpacesInDesignDOM(doc);
+                cleanupParagraphBoundaryBrArtifacts(doc);
                 clearTimeout(designInputDebounceTimer);
                 designInputDebounceTimer = setTimeout(syncFromDesign, 80);
             });
@@ -6075,6 +6119,7 @@ if (isset($_GET['action'])) {
                         sel.addRange(newRange);
                         // Scroll the new paragraph into view
                         newP.scrollIntoView({ block: 'nearest' });
+                        cleanupParagraphBoundaryBrArtifacts(doc);
                     }
                     clearTimeout(designInputDebounceTimer);
                     designInputDebounceTimer = setTimeout(syncFromDesign, 80);

@@ -1891,6 +1891,48 @@ if (isset($_GET['action'])) {
             return extractMetaDescriptionFromHtml(html);
         }
 
+        /** Pagină listă categorie/index (are cel puțin un bloc articol în zona listei), nu articol izolat. */
+        function isHtmlCategoryListingPage(html) {
+            var reg = findCategoryListRegion(html);
+            if (!reg.ok) return false;
+            return countCategoryListBlocks(html) >= 1;
+        }
+
+        /** Articol: are teaser SASA + em și nu e pagină de listă categorie. */
+        function isArticlePageForSasaMetaSync(html) {
+            var t = extractArticleSasaTeaserPlain(html);
+            if (t == null || t === '') return false;
+            return !isHtmlCategoryListingPage(html);
+        }
+
+        function escapeMetaDescriptionAttrValue(s) {
+            return String(s || '')
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\r?\n/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        /** Actualizează <meta name="description" content="…"> din textul din <em> după SASA-1. Fără tag → return html nemodificat. */
+        function applySasaTeaserToMetaDescription(html) {
+            var teaser = extractArticleSasaTeaserPlain(html);
+            if (teaser == null || teaser === '') return html;
+            var esc = escapeMetaDescriptionAttrValue(teaser);
+            var out = String(html);
+            var re1 = /(<meta\s+name\s*=\s*["']description["']\s+content\s*=\s*["'])([^"']*)(["'])/i;
+            var re2 = /(<meta\s+content\s*=\s*["'])([^"']*)(["']\s+name\s*=\s*["']description["'])/i;
+            if (re1.test(out)) {
+                return out.replace(re1, function (_, a, _old, c) { return a + esc + c; });
+            }
+            if (re2.test(out)) {
+                return out.replace(re2, function (_, a, _old, c) { return a + esc + c; });
+            }
+            return html;
+        }
+
         function createTabState(opts) {
             opts = opts || {};
             tabIdCounter++;
@@ -3535,11 +3577,27 @@ if (isset($_GET['action'])) {
             return divEndGlobal + (ws ? ws[1].length : 0);
         }
 
+        /** Înlocuiește spațiul gol între <div align="justify"> și punctul de inserare cu un singur \n + 4 spații (fără rânduri goale multiple). */
+        function collapseWhitespaceGapBeforeInsert(html, divEndGlobal, insertPos) {
+            if (insertPos <= divEndGlobal) return { html: html, insertPos: insertPos };
+            const gap = html.slice(divEndGlobal, insertPos);
+            if (!/^\s*$/.test(gap)) return { html: html, insertPos: insertPos };
+            const normalizedGap = '\n    ';
+            return {
+                html: html.slice(0, divEndGlobal) + normalizedGap + html.slice(insertPos),
+                insertPos: divEndGlobal + normalizedGap.length
+            };
+        }
+
         function insertBlockAfterIndexCategoryDiv(indexHtml, blockHtml) {
             const loc = locateIndexCategoryDivEnd(indexHtml);
             if (!loc.ok) return loc;
-            const insertPos = getInsertPosAfterCategoryDiv(indexHtml, loc.divEndGlobal);
-            const raw = indexHtml.slice(0, insertPos) + blockHtml + indexHtml.slice(insertPos);
+            const divEnd = loc.divEndGlobal;
+            let insertPos = getInsertPosAfterCategoryDiv(indexHtml, divEnd);
+            const collapsed = collapseWhitespaceGapBeforeInsert(indexHtml, divEnd, insertPos);
+            const htmlWork = collapsed.html;
+            insertPos = collapsed.insertPos;
+            const raw = htmlWork.slice(0, insertPos) + blockHtml + htmlWork.slice(insertPos);
             return {
                 ok: true,
                 html: normalizeBreakAfterTextObisnuitBeforeTable(raw)
@@ -3734,6 +3792,9 @@ if (isset($_GET['action'])) {
                 }
             }
 
+            const collapsed = collapseWhitespaceGapBeforeInsert(htmlWork, bounds2.divEndGlobal, insertPos);
+            htmlWork = collapsed.html;
+            insertPos = collapsed.insertPos;
             const raw = htmlWork.slice(0, insertPos) + blockHtml + htmlWork.slice(insertPos);
             const action = removeSegs.length ? 'move' : 'insert';
             const msg = removeSegs.length
@@ -3798,8 +3859,8 @@ if (isset($_GET['action'])) {
         }
 
         /**
-         * Articolul este sursa de adevăr: dacă teaserul din articol diferă de cel din pagina categorie pe disc,
-         * actualizează și salvează categorie (și buffer-ul tabului categorie dacă e deschis).
+         * Articolul este sursa de adevăr: aliniază teaserul în pagina categorie și, dacă articolul apare în index,
+         * și în ro/index.html sau en/index.html (același articleKey). index e tratat silențios (fără toast la erori).
          */
         async function reconcileLinkedCategoryTeaserWithArticle(articleTab, articleHtml, opts) {
             opts = opts || {};
@@ -3810,69 +3871,78 @@ if (isset($_GET['action'])) {
             if (!catPath || !aKey) return;
             const articleDesc = getCategorySyncDescriptionFromArticleHtml(articleHtml);
             const apiBase = window.location.pathname.replace(/[#?].*$/, '');
-            try {
-                const loadUrl = apiBase + '?action=load&file=' + encodeURIComponent(catPath);
-                const res = await fetch(loadUrl);
-                const data = await res.json();
-                if (!data.ok) {
-                    if (!opts.silent && opts.context !== 'focus') {
-                        toast('Categorie: nu pot citi fișierul pentru alinierea descrierii.');
+
+            async function syncListPageAtPath(listPath, isCategoryFile) {
+                if (!listPath) return;
+                try {
+                    const res = await fetch(apiBase + '?action=load&file=' + encodeURIComponent(listPath));
+                    const data = await res.json();
+                    if (!data.ok) {
+                        if (isCategoryFile && !opts.silent && opts.context !== 'focus') {
+                            toast('Categorie: nu pot citi fișierul pentru alinierea descrierii.');
+                        }
+                        return;
                     }
-                    return;
-                }
-                const catHtml = data.content || '';
-                const catTeaser = extractCategoryTeaserPlainForArticleKey(catHtml, aKey);
-                if (catTeaser === null) {
-                    if (!opts.silent && opts.context !== 'focus') {
-                        toast('Categorie: nu am găsit intrarea articolului în lista categorie.');
+                    const listHtml = data.content || '';
+                    const curTeaser = extractCategoryTeaserPlainForArticleKey(listHtml, aKey);
+                    if (curTeaser === null) {
+                        if (isCategoryFile && !opts.silent && opts.context !== 'focus') {
+                            toast('Categorie: nu am găsit intrarea articolului în lista categorie.');
+                        }
+                        return;
                     }
-                    return;
-                }
-                if (normalizeDescCompare(articleDesc) === normalizeDescCompare(catTeaser)) return;
-                const rep = replaceCategoryTeaserForArticleKey(catHtml, aKey, articleDesc);
-                if (!rep.changed) {
-                    if (!opts.silent && normalizeDescCompare(articleDesc) !== normalizeDescCompare(catTeaser)) {
-                        toast('Categorie: nu am putut înlocui paragraful text_obisnuit2 pentru acest articol.');
+                    if (normalizeDescCompare(articleDesc) === normalizeDescCompare(curTeaser)) return;
+                    const rep = replaceCategoryTeaserForArticleKey(listHtml, aKey, articleDesc);
+                    if (!rep.changed) {
+                        if (isCategoryFile && !opts.silent && normalizeDescCompare(articleDesc) !== normalizeDescCompare(curTeaser)) {
+                            toast('Categorie: nu am putut înlocui paragraful text_obisnuit2 pentru acest articol.');
+                        }
+                        return;
                     }
-                    return;
-                }
-                const body = new URLSearchParams();
-                body.append('file', catPath);
-                body.append('content', rep.html);
-                const resSave = await fetch(apiBase + '?action=save', { method: 'POST', body: body });
-                const saveData = await resSave.json();
-                if (!saveData.ok) {
-                    if (!opts.silent) {
-                        toast('Categorie: nu pot salva descrierea aliniată la articol.');
+                    const body = new URLSearchParams();
+                    body.append('file', listPath);
+                    body.append('content', rep.html);
+                    const resSave = await fetch(apiBase + '?action=save', { method: 'POST', body: body });
+                    const saveData = await resSave.json();
+                    if (!saveData.ok) {
+                        if (isCategoryFile && !opts.silent) {
+                            toast('Categorie: nu pot salva descrierea aliniată la articol.');
+                        }
+                        return;
                     }
-                    return;
-                }
-                if (!opts.silent) {
-                    var msg = (opts.context === 'open')
-                        ? 'Descrierea din articol era diferită — am actualizat și salvat pagina categorie.'
-                        : (opts.context === 'save')
-                            ? 'Descrierea a fost sincronizată și în pagina categorie.'
-                            : 'Pagina categorie a fost aliniată la articol.';
-                    toast(msg);
-                }
-                var catTab = findTabByPath(catPath);
-                if (catTab) {
-                    catTab.editorContent = rep.html;
-                    catTab.originalContent = rep.html;
-                    catTab.originalContentNorm = normalizeHtmlForCompare(rep.html);
-                    catTab.isDirty = false;
-                    if (catTab.id === activeTabId && editor) {
-                        isSyncFromDesign = true;
-                        editor.setValue(rep.html);
-                        isSyncFromDesign = false;
+                    if (!opts.silent && isCategoryFile) {
+                        var msg = (opts.context === 'open')
+                            ? 'Descrierea din articol era diferită — am actualizat și salvat pagina categorie.'
+                            : (opts.context === 'save')
+                                ? 'Descrierea a fost sincronizată și în pagina categorie.'
+                                : 'Pagina categorie a fost aliniată la articol.';
+                        toast(msg);
                     }
-                    renderTabs();
+                    var t = findTabByPath(listPath);
+                    if (t) {
+                        t.editorContent = rep.html;
+                        t.originalContent = rep.html;
+                        t.originalContentNorm = normalizeHtmlForCompare(rep.html);
+                        t.isDirty = false;
+                        if (t.id === activeTabId && editor) {
+                            isSyncFromDesign = true;
+                            editor.setValue(rep.html);
+                            isSyncFromDesign = false;
+                        }
+                        renderTabs();
+                    }
+                } catch (err) {
+                    console.error(err);
+                    if (isCategoryFile && !opts.silent) {
+                        toast('Eroare la alinierea descrierii articol → categorie.');
+                    }
                 }
-            } catch (e) {
-                console.error(e);
-                if (!opts.silent) {
-                    toast('Eroare la alinierea descrierii articol → categorie.');
-                }
+            }
+
+            await syncListPageAtPath(catPath, true);
+            var idxPath = getToIndexPathForFile(articleTab.filePath || '');
+            if (idxPath && normPathLoose(idxPath) !== normPathLoose(catPath)) {
+                await syncListPageAtPath(idxPath, false);
             }
         }
 
@@ -5401,12 +5471,23 @@ if (isset($_GET['action'])) {
                 currentFile = trimmed;
             }
             try {
+                var rawContent = editor.getValue();
+                var contentToSave = rawContent;
+                if (isCurrentFileHtml() && typeof isArticlePageForSasaMetaSync === 'function' &&
+                    isArticlePageForSasaMetaSync(rawContent) && typeof applySasaTeaserToMetaDescription === 'function') {
+                    contentToSave = applySasaTeaserToMetaDescription(rawContent);
+                }
                 const body = new URLSearchParams();
                 body.append('file', currentFile);
-                body.append('content', editor.getValue());
+                body.append('content', contentToSave);
                 const res = await fetch('?action=save', { method: 'POST', body });
                 const data = await res.json();
                 if (!data.ok) { toast('Eroare la salvare: ' + data.error); return; }
+                if (contentToSave !== rawContent) {
+                    isSyncFromDesign = true;
+                    editor.setValue(contentToSave);
+                    isSyncFromDesign = false;
+                }
                 isDirty = false;
                 if (activeTabId) {
                     var tab = null;
@@ -5414,11 +5495,11 @@ if (isset($_GET['action'])) {
                     if (tab) {
                         tab.isDirty = false;
                         tab.filePath = currentFile;
-                        tab.originalContent = editor.getValue();
+                        tab.originalContent = contentToSave;
                         tab.originalContentNorm = normalizeHtmlForCompare(tab.originalContent);
                         tab.editorContent = tab.originalContent;
-                        tab.tabLabel = getTabLabel(editor.getValue(), currentFile);
-                        tab.fullTitle = getTabFullTitle(editor.getValue(), currentFile);
+                        tab.tabLabel = getTabLabel(contentToSave, currentFile);
+                        tab.fullTitle = getTabFullTitle(contentToSave, currentFile);
                         removeTabBackup(tab.id);
                         if (typeof syncLinkedCategoryDescriptionAfterArticleSave === 'function' && tab.type !== 'browser' &&
                             currentFile && isCurrentFileHtml()) {
@@ -5551,6 +5632,47 @@ if (isset($_GET['action'])) {
             }
         }
 
+        // Remove accidental boundary <br> placeholders in normal paragraphs after Enter/Backspace.
+        // Keep internal/manual line breaks untouched; only trim leading/trailing <br> when text exists.
+        function cleanupParagraphBoundaryBrArtifacts(doc) {
+            if (!doc || !doc.body) return;
+            const ps = doc.querySelectorAll('p.text_obisnuit, p.text_obisnuit2');
+            for (let i = 0; i < ps.length; i++) {
+                const p = ps[i];
+                const hasMeaningfulText = (p.textContent || '').replace(/\u200B/g, '').trim().length > 0;
+                if (!hasMeaningfulText) continue;
+                // Trim leading boundary <br> (preserve user-typed spaces)
+                for (;;) {
+                    const fc = p.firstChild;
+                    if (!fc) break;
+                    if (fc.nodeType === Node.ELEMENT_NODE && fc.nodeName === 'BR') { p.removeChild(fc); continue; }
+                    break;
+                }
+                // Trim trailing boundary <br> (preserve user-typed spaces)
+                for (;;) {
+                    const lc = p.lastChild;
+                    if (!lc) break;
+                    if (lc.nodeType === Node.ELEMENT_NODE && lc.nodeName === 'BR') { p.removeChild(lc); continue; }
+                    break;
+                }
+            }
+        }
+
+        // In design mode, keep trailing spaces visible in editable article paragraphs.
+        // This avoids the "space exists in code but not visible in design" confusion.
+        function ensureDesignWhitespaceEditingStyle(doc) {
+            if (!doc || !doc.head) return;
+            if (doc.getElementById('designWhitespaceEditingStyle')) return;
+            const st = doc.createElement('style');
+            st.id = 'designWhitespaceEditingStyle';
+            st.textContent =
+                'body[contenteditable=\"true\"] p.text_obisnuit,' +
+                'body[contenteditable=\"true\"] p.text_obisnuit2 {' +
+                ' white-space: break-spaces !important;' +
+                '}';
+            doc.head.appendChild(st);
+        }
+
         function syncFromDesign() {
             if (isSyncFromCode) return;
             const iframe = document.getElementById('preview');
@@ -5562,6 +5684,7 @@ if (isset($_GET['action'])) {
             if (!bodyMatch) return;
             // Remove CROP highlight from DOM before reading so it never persists to code
             clearSasaDesignHighlight(doc);
+            cleanupParagraphBoundaryBrArtifacts(doc);
             // Replace &nbsp; with regular space in SASA region and h1.den_articol
             var rawInner = cleanNbspInHtml(doc.body.innerHTML);
             // Remove data-orig-class helper attribute so it never persists to saved code
@@ -5613,6 +5736,7 @@ if (isset($_GET['action'])) {
             const doc = iframe.contentDocument;
             if (!doc || !doc.body || !isCurrentFileHtml()) return;
             doc.body.contentEditable = 'true';
+            ensureDesignWhitespaceEditingStyle(doc);
             // Track that design panel was last focused (for Find scope in split mode)
             doc.addEventListener('mousedown', () => { _frDesignWasLastFocused = true; });
             // Block text drag-and-drop in design panel (prevents accidental moves)
@@ -5790,6 +5914,7 @@ if (isset($_GET['action'])) {
                 if (_imgClickMark) { _imgClickMark.clear(); _imgClickMark = null; }
                 // Collapse multiple spaces in design DOM text nodes (real-time cleanup)
                 collapseSpacesInDesignDOM(doc);
+                cleanupParagraphBoundaryBrArtifacts(doc);
                 clearTimeout(designInputDebounceTimer);
                 designInputDebounceTimer = setTimeout(syncFromDesign, 80);
             });
@@ -5994,6 +6119,7 @@ if (isset($_GET['action'])) {
                         sel.addRange(newRange);
                         // Scroll the new paragraph into view
                         newP.scrollIntoView({ block: 'nearest' });
+                        cleanupParagraphBoundaryBrArtifacts(doc);
                     }
                     clearTimeout(designInputDebounceTimer);
                     designInputDebounceTimer = setTimeout(syncFromDesign, 80);
