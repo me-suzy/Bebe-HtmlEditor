@@ -1983,6 +1983,12 @@ if (isset($_GET['action'])) {
                 .replace(/<(br|hr|img|input|meta|link|col|area|source|track|wbr|embed|param)((?:\s[^>]*?)?)\s+>/gi, '<$1$2>');
         }
 
+        /** Pentru dirty-check și sync Design→cod: ignoră diferențe minore (spații/newlines între taguri). */
+        function normalizeHtmlForSyncCompare(html) {
+            var h = String(html || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            return normalizeHtmlForCompare(h).replace(/>\s+</g, '><');
+        }
+
         function getTabFullTitle(content, fileName) {
             var m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(content);
             if (m && m[1].trim()) return m[1].trim().replace(/\s+/g, ' ');
@@ -2095,6 +2101,16 @@ if (isset($_GET['action'])) {
             tab.designRedoStack = designRedoStack.slice();
             tab.lastDesignSnapshot = lastDesignSnapshot;
             tab.designCleanBodyHtml = designCleanBodyHtml;
+            // Dirty pe baza conținutului real, nu a flag-ului global (evită steaua falsă la schimb tab)
+            var nowDirty = (normalizeHtmlForSyncCompare(tab.editorContent) !== normalizeHtmlForSyncCompare(tab.originalContent));
+            tab.isDirty = nowDirty;
+            isDirty = nowDirty;
+            var _elDirty = document.querySelector('.editor-tab[data-tab-id="' + activeTabId + '"]');
+            if (_elDirty) {
+                if (nowDirty) _elDirty.classList.add('dirty');
+                else _elDirty.classList.remove('dirty');
+            }
+            if (nowDirty && typeof backupDirtyTabs === 'function') backupDirtyTabs();
             // Save preview iframe scroll position (for Design/Split mode)
             try {
                 var iframe = document.getElementById('preview');
@@ -2405,7 +2421,7 @@ if (isset($_GET['action'])) {
                         viewMode: b.viewMode
                     });
                     // Only mark dirty if content actually differs from original
-                    var isActuallyDirty = (normalizeHtmlForCompare((b.editorContent || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')) !== tab.originalContentNorm);
+                    var isActuallyDirty = (normalizeHtmlForSyncCompare(b.editorContent || '') !== normalizeHtmlForSyncCompare(tab.originalContent));
                     tab.isDirty = isActuallyDirty;
                     tabs.push(tab);
                     restored++;
@@ -4885,7 +4901,7 @@ if (isset($_GET['action'])) {
                     var _t = null;
                     for (var _i = 0; _i < tabs.length; _i++) { if (tabs[_i].id === activeTabId) { _t = tabs[_i]; break; } }
                     if (_t) {
-                        var nowDirty = (normalizeHtmlForCompare(editor.getValue()) !== _t.originalContentNorm);
+                        var nowDirty = (normalizeHtmlForSyncCompare(editor.getValue()) !== normalizeHtmlForSyncCompare(_t.originalContent));
                         if (nowDirty !== _t.isDirty) {
                             _t.isDirty = nowDirty;
                             isDirty = nowDirty;
@@ -5704,6 +5720,11 @@ if (isset($_GET['action'])) {
                 if (cropHighlightActive) highlightSasaInDesign('crop');
                 return;
             }
+            var candidateFull = full.slice(0, bodyMatch.index) + newBody + full.slice(bodyMatch.index + bodyMatch[0].length);
+            if (normalizeHtmlForSyncCompare(candidateFull) === normalizeHtmlForSyncCompare(full)) {
+                if (cropHighlightActive) highlightSasaInDesign('crop');
+                return;
+            }
             isSyncFromDesign = true;
             const from = editor.posFromIndex(bodyMatch.index);
             const to = editor.posFromIndex(bodyMatch.index + bodyMatch[0].length);
@@ -5715,7 +5736,7 @@ if (isset($_GET['action'])) {
                 var _t = null;
                 for (var _i = 0; _i < tabs.length; _i++) { if (tabs[_i].id === activeTabId) { _t = tabs[_i]; break; } }
                 if (_t) {
-                    var nowDirty = (normalizeHtmlForCompare(editor.getValue()) !== _t.originalContentNorm);
+                    var nowDirty = (normalizeHtmlForSyncCompare(editor.getValue()) !== normalizeHtmlForSyncCompare(_t.originalContent));
                     _t.isDirty = nowDirty;
                     isDirty = nowDirty;
                     var _el = document.querySelector('.editor-tab[data-tab-id="' + activeTabId + '"]');
@@ -6348,7 +6369,7 @@ if (isset($_GET['action'])) {
                 var _t = null;
                 for (var _i = 0; _i < tabs.length; _i++) { if (tabs[_i].id === activeTabId) { _t = tabs[_i]; break; } }
                 if (_t) {
-                    var nowDirty = (normalizeHtmlForCompare(editor.getValue()) !== _t.originalContentNorm);
+                    var nowDirty = (normalizeHtmlForSyncCompare(editor.getValue()) !== normalizeHtmlForSyncCompare(_t.originalContent));
                     // Also check against initial browser-serialized body
                     if (nowDirty && designCleanBodyHtml !== null && designCleanCode !== null) {
                         const currentBody = getDesignBodyHtml();
