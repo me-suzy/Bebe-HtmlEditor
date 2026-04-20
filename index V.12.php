@@ -1959,6 +1959,7 @@ if (isset($_GET['action'])) {
                 designRedoStack: [],
                 lastDesignSnapshot: null,
                 designCleanBodyHtml: null,
+                designCleanCode: null, // baseline editor text when design snapshot was taken (cross-tab undo / dirty)
                 categorySyncDescriptionBaseline: getCategorySyncDescriptionFromArticleHtml(_oc),
                 linkedCategoryPath: null,
                 linkedArticleKey: null
@@ -2101,8 +2102,18 @@ if (isset($_GET['action'])) {
             tab.designRedoStack = designRedoStack.slice();
             tab.lastDesignSnapshot = lastDesignSnapshot;
             tab.designCleanBodyHtml = designCleanBodyHtml;
-            // Dirty pe baza conținutului real, nu a flag-ului global (evită steaua falsă la schimb tab)
-            var nowDirty = (normalizeHtmlForSyncCompare(tab.editorContent) !== normalizeHtmlForSyncCompare(tab.originalContent));
+            tab.designCleanCode = designCleanCode;
+            // Recalculate dirty only when there is evidence of real editing.
+            // On some tab-open/switch flows, the editor can run internal syncs
+            // that should not mark the tab as user-modified.
+            var hsz = (editor.getDoc() && typeof editor.getDoc().historySize === 'function')
+                ? editor.getDoc().historySize()
+                : { undo: 0, redo: 0 };
+            var hasHistoryEdits = !!(hsz && (hsz.undo > 0 || hsz.redo > 0));
+            var nowDirty = false;
+            if (isDirty || hasHistoryEdits) {
+                nowDirty = (normalizeHtmlForSyncCompare(tab.editorContent) !== normalizeHtmlForSyncCompare(tab.originalContent));
+            }
             tab.isDirty = nowDirty;
             isDirty = nowDirty;
             var _elDirty = document.querySelector('.editor-tab[data-tab-id="' + activeTabId + '"]');
@@ -2134,6 +2145,7 @@ if (isset($_GET['action'])) {
             designRedoStack = tab.designRedoStack.slice();
             lastDesignSnapshot = tab.lastDesignSnapshot;
             designCleanBodyHtml = tab.designCleanBodyHtml;
+            designCleanCode = (tab.designCleanCode != null) ? tab.designCleanCode : (editor ? editor.getValue() : null);
 
             // Suppress change-triggered preview updates during restore
             isSyncFromDesign = true;
@@ -2529,6 +2541,15 @@ if (isset($_GET['action'])) {
             lastDesignSnapshot = getDesignBodyHtml();
             designCleanBodyHtml = lastDesignSnapshot; // save initial body for dirty comparison
             designCleanCode = editor ? editor.getValue() : null;
+            if (activeTabId) {
+                for (var _ti = 0; _ti < tabs.length; _ti++) {
+                    if (tabs[_ti].id === activeTabId) {
+                        tabs[_ti].designCleanBodyHtml = designCleanBodyHtml;
+                        tabs[_ti].designCleanCode = designCleanCode;
+                        break;
+                    }
+                }
+            }
             if (designSnapshotTimer) clearInterval(designSnapshotTimer);
             // Periodically save snapshots while the user types in design, so each
             // undo step covers ~500ms of keystroke activity.
@@ -3859,6 +3880,27 @@ if (isset($_GET['action'])) {
             return { ok: true, html: normalizeBreakAfterTextObisnuitBeforeTable(out), changed: true };
         }
 
+        // Înlocuiește întregul bloc al articolului (title + text_dreapta + teaser) pentru același articleKey.
+        function replaceCategoryBlockForArticleKey(categoryHtml, articleKey, newBlockHtml) {
+            if (!articleKey || !newBlockHtml) return { ok: true, html: categoryHtml, changed: false };
+            const bounds = findCategoryListRegion(categoryHtml);
+            if (!bounds.ok) return { ok: false, html: categoryHtml, changed: false };
+            const blocks = enumerateIndexCategoryBlocks(categoryHtml, bounds.divEndGlobal, bounds.regionEnd);
+            let target = null;
+            for (let i = 0; i < blocks.length; i++) {
+                if (normalizeArticleKeyFromBlock(blocks[i].block) === articleKey) {
+                    target = blocks[i];
+                    break;
+                }
+            }
+            if (!target) return { ok: true, html: categoryHtml, changed: false };
+            if (compactArticleHtmlWs(target.block) === compactArticleHtmlWs(newBlockHtml)) {
+                return { ok: true, html: categoryHtml, changed: false };
+            }
+            const out = categoryHtml.slice(0, target.start) + newBlockHtml + categoryHtml.slice(target.end);
+            return { ok: true, html: normalizeBreakAfterTextObisnuitBeforeTable(out), changed: true };
+        }
+
         /** Textul din <em> din blocul listă categorie pentru articolul cu același articleKey (normalizeArticleKeyFromBlock). */
         function extractCategoryTeaserPlainForArticleKey(categoryHtml, articleKey) {
             if (!articleKey) return null;
@@ -3886,6 +3928,8 @@ if (isset($_GET['action'])) {
             const aKey = articleTab.linkedArticleKey;
             if (!catPath || !aKey) return;
             const articleDesc = getCategorySyncDescriptionFromArticleHtml(articleHtml);
+            const builtArticleBlock = buildCategoryBlockFromArticleHtml(articleHtml);
+            const articleBlock = builtArticleBlock && builtArticleBlock.ok ? builtArticleBlock.block : '';
             const apiBase = window.location.pathname.replace(/[#?].*$/, '');
 
             async function syncListPageAtPath(listPath, isCategoryFile) {
@@ -3907,11 +3951,18 @@ if (isset($_GET['action'])) {
                         }
                         return;
                     }
-                    if (normalizeDescCompare(articleDesc) === normalizeDescCompare(curTeaser)) return;
-                    const rep = replaceCategoryTeaserForArticleKey(listHtml, aKey, articleDesc);
+                    let rep = null;
+                    if (articleBlock) {
+                        rep = replaceCategoryBlockForArticleKey(listHtml, aKey, articleBlock);
+                    } else {
+                        if (normalizeDescCompare(articleDesc) === normalizeDescCompare(curTeaser)) return;
+                        rep = replaceCategoryTeaserForArticleKey(listHtml, aKey, articleDesc);
+                    }
                     if (!rep.changed) {
                         if (isCategoryFile && !opts.silent && normalizeDescCompare(articleDesc) !== normalizeDescCompare(curTeaser)) {
-                            toast('Categorie: nu am putut înlocui paragraful text_obisnuit2 pentru acest articol.');
+                            toast(articleBlock
+                                ? 'Categorie: nu am putut înlocui blocul articolului pentru acest articol.'
+                                : 'Categorie: nu am putut înlocui paragraful text_obisnuit2 pentru acest articol.');
                         }
                         return;
                     }
@@ -3987,6 +4038,56 @@ if (isset($_GET['action'])) {
 
         async function syncLinkedCategoryDescriptionAfterArticleSave(tab, savedHtml) {
             await reconcileLinkedCategoryTeaserWithArticle(tab, savedHtml, { context: 'save', silent: true });
+        }
+
+        // Sincronizare robustă după Save pentru pagini de tip articol:
+        // actualizează/inserează blocul complet în categoria aferentă și în index.
+        async function syncArticleBlockToCategoryAndIndexAfterSave(filePath, articleHtml) {
+            if (!filePath || !articleHtml) return;
+            const built = buildCategoryBlockFromArticleHtml(articleHtml);
+            if (!built || !built.ok) return;
+            const apiBase = window.location.pathname.replace(/[#?].*$/, '');
+            const catPath = categoryPathBesideArticle(filePath, built.categoryFile);
+            const idxPath = getToIndexPathForFile(filePath);
+
+            async function mergeIntoFile(targetPath, mergerFn) {
+                if (!targetPath) return;
+                try {
+                    const resLoad = await fetch(apiBase + '?action=load&file=' + encodeURIComponent(targetPath));
+                    const loadData = await resLoad.json();
+                    if (!loadData.ok) return;
+                    const srcHtml = loadData.content || '';
+                    const merged = mergerFn(srcHtml, built.block);
+                    if (!merged || !merged.ok || merged.action === 'skip') return;
+                    const body = new URLSearchParams();
+                    body.append('file', targetPath);
+                    body.append('content', merged.html);
+                    await fetch(apiBase + '?action=save', { method: 'POST', body: body });
+
+                    var t = findTabByPath(targetPath);
+                    if (t) {
+                        t.editorContent = merged.html;
+                        t.originalContent = merged.html;
+                        t.originalContentNorm = normalizeHtmlForCompare(merged.html);
+                        t.isDirty = false;
+                        if (t.id === activeTabId && editor) {
+                            isSyncFromDesign = true;
+                            editor.setValue(merged.html);
+                            isSyncFromDesign = false;
+                        }
+                        renderTabs();
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            }
+
+            if (normPathLoose(catPath) !== normPathLoose(filePath)) {
+                await mergeIntoFile(catPath, mergeCategoryBlockIntoCategoryHtml);
+            }
+            if (idxPath && normPathLoose(idxPath) !== normPathLoose(filePath)) {
+                await mergeIntoFile(idxPath, mergeCategoryBlockIntoIndex);
+            }
         }
 
         // Fără dubluri în index: același titlu+dată, același URL articol (link den_articol / linkMare), sau același HTML compresat.
@@ -5514,6 +5615,8 @@ if (isset($_GET['action'])) {
                         tab.originalContent = contentToSave;
                         tab.originalContentNorm = normalizeHtmlForCompare(tab.originalContent);
                         tab.editorContent = tab.originalContent;
+                        tab.designCleanCode = contentToSave;
+                        designCleanCode = contentToSave;
                         tab.tabLabel = getTabLabel(contentToSave, currentFile);
                         tab.fullTitle = getTabFullTitle(contentToSave, currentFile);
                         removeTabBackup(tab.id);
@@ -5521,6 +5624,7 @@ if (isset($_GET['action'])) {
                             currentFile && isCurrentFileHtml()) {
                             refreshTabLinkedCategory(tab);
                             await syncLinkedCategoryDescriptionAfterArticleSave(tab, tab.originalContent);
+                            await syncArticleBlockToCategoryAndIndexAfterSave(currentFile, tab.originalContent);
                         }
                         tab.categorySyncDescriptionBaseline = getCategorySyncDescriptionFromArticleHtml(tab.originalContent);
                         renderTabs();
@@ -5698,6 +5802,17 @@ if (isset($_GET['action'])) {
             const bodyRe = /<body([^>]*)>[\s\S]*<\/body>/i;
             const bodyMatch = bodyRe.exec(full);
             if (!bodyMatch) return;
+            // Preview-ul PHP (action=preview) poate sanitiza <body> față de sursa din editor
+            // (fără on*, <i>→<em>, etc.). Dacă utilizatorul nu a modificat deloc design-ul,
+            // innerHTML-ul din iframe rămâne identic cu snapshot-ul inițial — în acest caz
+            // nu împingem body-ul înapoi în cod (ar șterge atribute din sursă și ar marca
+            // tab-ul ca dirty fără edit real — steaua falsă la schimb de tab / flush).
+            if (!isApplyingUndoRedo && designCleanBodyHtml !== null) {
+                var _pristine = getDesignBodyHtml();
+                if (_pristine !== null && _pristine === designCleanBodyHtml) {
+                    return;
+                }
+            }
             // Remove CROP highlight from DOM before reading so it never persists to code
             clearSasaDesignHighlight(doc);
             cleanupParagraphBoundaryBrArtifacts(doc);
@@ -5709,6 +5824,8 @@ if (isset($_GET['action'])) {
             // to avoid destroying indentation in the code editor.
             // Ensure line breaks between block-level elements (Design outputs them on one line)
             rawInner = rawInner.replace(/(<\/(?:p|div|h[1-6]|ul|ol|li|table|tr|td|th|thead|tbody|blockquote|section|article|header|footer|nav|aside|figure|figcaption|hr|br|pre|dl|dt|dd)>)(<)/gi, '$1\n$2');
+            // După <p …> nu lăsăm textul pe rândul următor (Design/browser pot insera \n la început de paragraf)
+            rawInner = rawInner.replace(/(<p\b[^>]*>)\s+/gi, '$1');
             // Preserve original tag names (i vs em, b vs strong) from the code editor
             // so that browser normalisation does not silently rename them.
             var oldBodyInner = bodyMatch[0].replace(/^<body[^>]*>/i, '').replace(/<\/body>$/i, '');
