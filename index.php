@@ -1432,11 +1432,28 @@ if (isset($_GET['action'])) {
             return n.endsWith('.html') || n.endsWith('.htm');
         }
 
+        // Strip any <strong>/<b> tags from the live design document by unwrapping
+        // them. The user never wants these in the code — bold is expressed via the
+        // text_obisnuit2 class instead. Runs on every design→code sync so legacy
+        // HTML gets cleaned up the first time the user edits it.
+        function sanitizeDesignBody(doc) {
+            if (!doc || !doc.body) return;
+            const nodes = doc.body.querySelectorAll('strong, b');
+            for (const n of nodes) {
+                const parent = n.parentNode;
+                if (!parent) continue;
+                while (n.firstChild) parent.insertBefore(n.firstChild, n);
+                parent.removeChild(n);
+                if (parent.normalize) parent.normalize();
+            }
+        }
+
         function syncFromDesign() {
             if (isSyncFromCode) return;
             const iframe = document.getElementById('preview');
             const doc = iframe.contentDocument;
             if (!doc || !doc.body || !editor) return;
+            sanitizeDesignBody(doc);
             const full = editor.getValue();
             const bodyRe = /<body([^>]*)>[\s\S]*<\/body>/i;
             const bodyMatch = bodyRe.exec(full);
@@ -1501,6 +1518,37 @@ if (isset($_GET['action'])) {
                 // Sync any clicked element to its position in the source code
                 if (typeof syncClickedElementToCode === 'function') syncClickedElementToCode(target);
             }, true);
+            // On Enter inside a paragraph that carries text_obisnuit / text_obisnuit2,
+            // ensure the NEW paragraph that the browser creates gets class="text_obisnuit"
+            // (the default). This prevents an empty/bare <p> or a <p class="text_obisnuit2">
+            // from being inherited across splits.
+            doc.addEventListener('keydown', e => {
+                if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+                const win = doc.defaultView;
+                const sel = win && win.getSelection();
+                if (!sel || sel.rangeCount === 0) return;
+                let node = sel.anchorNode;
+                if (node && node.nodeType === 3) node = node.parentElement;
+                const originP = node && node.closest ? node.closest('p') : null;
+                if (!originP) return;
+                const isTargetZone = originP.classList.contains('text_obisnuit')
+                    || originP.classList.contains('text_obisnuit2');
+                if (!isTargetZone) return;
+                // Let the browser perform the split, then normalise the new paragraph.
+                setTimeout(() => {
+                    const sel2 = win.getSelection();
+                    if (!sel2 || sel2.rangeCount === 0) return;
+                    let n2 = sel2.anchorNode;
+                    if (n2 && n2.nodeType === 3) n2 = n2.parentElement;
+                    const newP = n2 && n2.closest ? n2.closest('p') : null;
+                    if (!newP || newP === originP) return;
+                    newP.classList.remove('text_obisnuit2');
+                    newP.classList.add('text_obisnuit');
+                    clearTimeout(designInputDebounceTimer);
+                    designInputDebounceTimer = setTimeout(syncFromDesign, 80);
+                }, 0);
+            }, true);
+
             doc.addEventListener('keydown', e => {
                 if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
                     e.preventDefault();
@@ -2280,7 +2328,12 @@ if (isset($_GET['action'])) {
             fontSel.value = opt ? opt.value : '';
             const px = computed.fontSize ? parseFloat(computed.fontSize) : 0;
             sizeSel.value = px ? String(Math.round(px)) : '';
-            boldBtn.style.background = (computed.fontWeight === '700' || computed.fontWeight === 'bold') ? 'rgba(59,130,246,0.3)' : '';
+            // Bold state now tracks the text_obisnuit2 class (on the element itself,
+            // an ancestor span/paragraph, or the closest <p>), not the computed font-weight.
+            const boldActive = !!(el.closest && (
+                el.closest('.text_obisnuit2')
+            ));
+            boldBtn.style.background = boldActive ? 'rgba(59,130,246,0.3)' : '';
             italicBtn.style.background = computed.fontStyle === 'italic' ? 'rgba(59,130,246,0.3)' : '';
             colorInp.value = rgbToHex(computed.color) || '#000000';
             bgInp.value = rgbToHex(computed.backgroundColor) || '#ffffff';
@@ -2333,33 +2386,94 @@ if (isset($_GET['action'])) {
         function toggleInlineFormat(kind) {
             // Push the current body state BEFORE the change so undo can revert it
             designPushCurrentState();
-            const tagName = kind === 'bold' ? 'strong' : 'em';
+            if (kind === 'bold') {
+                toggleBoldClass();
+            } else {
+                toggleEmFormat();
+            }
+            syncFromDesign();
+            // Record the post-change state so the next snapshot won't double-push
+            lastDesignSnapshot = getDesignBodyHtml();
+        }
+
+        // Bold via class, never via <strong>/<b>.
+        // - With a text selection inside a paragraph: wrap/unwrap the selection
+        //   in <span class="text_obisnuit2">...</span> (toggle).
+        // - Just caret inside a <p>: toggle the paragraph's class between
+        //   "text_obisnuit" and "text_obisnuit2".
+        function toggleBoldClass() {
+            const BOLD_CLASS = 'text_obisnuit2';
+            const NORMAL_CLASS = 'text_obisnuit';
             const info = getDesignSelectionRange();
             if (info && !info.range.collapsed) {
                 const { doc, sel, range } = info;
-                // Save selected text for re-selection
+                const selectedText = range.toString();
+                let node = range.commonAncestorContainer;
+                if (node.nodeType === 3) node = node.parentElement;
+                // Is the whole selection already inside a span.text_obisnuit2?
+                const existingSpan = node && node.closest
+                    ? node.closest('span.' + BOLD_CLASS)
+                    : null;
+                if (existingSpan && rangeIsInsideNode(range, existingSpan)) {
+                    const parent = existingSpan.parentNode;
+                    while (existingSpan.firstChild) parent.insertBefore(existingSpan.firstChild, existingSpan);
+                    parent.removeChild(existingSpan);
+                    if (parent.normalize) parent.normalize();
+                    sel.removeAllRanges();
+                    if (selectedText) {
+                        const newRange = findTextRangeInNode(doc, parent, selectedText);
+                        if (newRange) sel.addRange(newRange);
+                    }
+                } else {
+                    const wrapper = doc.createElement('span');
+                    wrapper.className = BOLD_CLASS;
+                    try {
+                        range.surroundContents(wrapper);
+                    } catch (e) {
+                        const frag = range.extractContents();
+                        wrapper.appendChild(frag);
+                        range.insertNode(wrapper);
+                    }
+                    sel.removeAllRanges();
+                    const newRange = doc.createRange();
+                    newRange.selectNodeContents(wrapper);
+                    sel.addRange(newRange);
+                }
+            } else {
+                // No selection: toggle the paragraph's class
+                const el = getDesignSelection();
+                if (!el) return;
+                const p = el.closest ? el.closest('p') : null;
+                if (!p) return;
+                if (p.classList.contains(BOLD_CLASS)) {
+                    p.classList.remove(BOLD_CLASS);
+                    p.classList.add(NORMAL_CLASS);
+                } else {
+                    p.classList.remove(NORMAL_CLASS);
+                    p.classList.add(BOLD_CLASS);
+                }
+            }
+        }
+
+        // Italic stays tag-based: uses <em>.
+        function toggleEmFormat() {
+            const tagName = 'em';
+            const info = getDesignSelectionRange();
+            if (info && !info.range.collapsed) {
+                const { doc, sel, range } = info;
                 const selectedText = range.toString();
                 let node = range.commonAncestorContainer;
                 if (node.nodeType === 3) node = node.parentElement;
                 let fmt = node && node.closest ? node.closest(tagName) : null;
                 if (fmt && fmt.tagName.toLowerCase() === tagName) {
-                    // Remove formatting: unwrap the tag but keep selection on original text
                     const parent = fmt.parentNode;
-                    // Collect child nodes before unwrapping
-                    const childNodes = Array.from(fmt.childNodes);
-                    // Get the text content that was selected inside fmt
-                    const firstChild = fmt.firstChild;
-                    const lastChild = fmt.lastChild;
                     while (fmt.firstChild) parent.insertBefore(fmt.firstChild, fmt);
                     parent.removeChild(fmt);
                     parent.normalize();
-                    // Re-select the same text in the parent
                     sel.removeAllRanges();
                     if (selectedText) {
                         const newRange = findTextRangeInNode(doc, parent, selectedText);
-                        if (newRange) {
-                            sel.addRange(newRange);
-                        }
+                        if (newRange) sel.addRange(newRange);
                     }
                 } else {
                     const wrapper = doc.createElement(tagName);
@@ -2390,9 +2504,14 @@ if (isset($_GET['action'])) {
                     el.appendChild(wrapper);
                 }
             }
-            syncFromDesign();
-            // Record the post-change state so the next snapshot won't double-push
-            lastDesignSnapshot = getDesignBodyHtml();
+        }
+
+        // True when every node touched by range is a descendant of (or equal to) container.
+        function rangeIsInsideNode(range, container) {
+            if (!container) return false;
+            const startOK = container === range.startContainer || container.contains(range.startContainer);
+            const endOK = container === range.endContainer || container.contains(range.endContainer);
+            return startOK && endOK;
         }
 
         // Helper: find a text range inside a node that matches the given text
