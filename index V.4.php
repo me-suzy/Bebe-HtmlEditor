@@ -2428,6 +2428,8 @@ if (isset($_GET['action'])) {
                                 fullTitle: tabs[i].fullTitle,
                                 editorContent: tabs[i].editorContent,
                                 originalContent: tabs[i].originalContent,
+                                cursorPos: tabs[i].cursorPos,
+                                scrollInfo: tabs[i].scrollInfo,
                                 viewMode: tabs[i].viewMode
                             });
                         }
@@ -2459,42 +2461,67 @@ if (isset($_GET['action'])) {
             try { localStorage.removeItem('htmlEditorBackupTabs'); } catch (e) { }
         }
 
-        function restoreBackupTabs() {
+        async function restoreBackupTabs() {
             try {
                 var raw = localStorage.getItem('htmlEditorBackupTabs');
                 if (!raw) return;
                 var arr = JSON.parse(raw);
                 if (!arr || !arr.length) return;
                 var restored = 0;
+                var keptBackups = [];
                 for (var i = 0; i < arr.length; i++) {
                     var b = arr[i];
                     // Skip if already open
                     if (b.filePath && findTabByPath(b.filePath)) continue;
+                    var diskContent = null;
+                    if (b.filePath) {
+                        try {
+                            var res = await fetch('?action=load&file=' + encodeURIComponent(b.filePath));
+                            var data = await res.json();
+                            if (data && data.ok) diskContent = data.content || '';
+                        } catch (loadErr) { diskContent = null; }
+                    }
+                    var baselineContent = (diskContent !== null) ? diskContent : (b.originalContent || '');
+                    var isActuallyDirty = (normalizeHtmlForSyncCompare(b.editorContent || '') !== normalizeHtmlForSyncCompare(baselineContent));
+                    if (!isActuallyDirty) continue;
                     var tab = createTabState({
                         filePath: b.filePath,
                         fileName: b.fileName,
                         tabLabel: b.tabLabel,
                         fullTitle: b.fullTitle,
                         editorContent: b.editorContent,
-                        originalContent: b.originalContent,
+                        originalContent: baselineContent,
+                        cursorPos: b.cursorPos,
+                        scrollInfo: b.scrollInfo,
                         viewMode: b.viewMode
                     });
-                    // Only mark dirty if content actually differs from original
-                    var isActuallyDirty = (normalizeHtmlForSyncCompare(b.editorContent || '') !== normalizeHtmlForSyncCompare(tab.originalContent));
-                    tab.isDirty = isActuallyDirty;
+                    // Only restore backups that still differ from the real file on disk.
+                    tab.isDirty = true;
                     tabs.push(tab);
+                    keptBackups.push({
+                        id: tab.id,
+                        filePath: tab.filePath,
+                        fileName: tab.fileName,
+                        tabLabel: tab.tabLabel,
+                        fullTitle: tab.fullTitle,
+                        editorContent: tab.editorContent,
+                        originalContent: tab.originalContent,
+                        cursorPos: tab.cursorPos,
+                        scrollInfo: tab.scrollInfo,
+                        viewMode: tab.viewMode
+                    });
                     restored++;
                 }
                 if (restored > 0) {
-                    // Remove tabs that turned out to be clean (content matches original)
-                    var actuallyDirty = tabs.filter(function (t) { return t.isDirty; }).length;
                     activeTabId = tabs[0].id;
                     restoreTabState(tabs[0]);
                     renderTabs();
                     hideOverlay();
                     // (backup restored silently — dirty star on tab is enough indication)
                     // Clean up backup for tabs that are no longer dirty
-                    backupDirtyTabs();
+                    localStorage.setItem('htmlEditorBackupTabs', JSON.stringify(keptBackups));
+                } else {
+                    localStorage.removeItem('htmlEditorBackupTabs');
                 }
             } catch (e) { }
         }
@@ -5973,7 +6000,7 @@ if (isset($_GET['action'])) {
             // innerHTML-ul din iframe rămâne identic cu snapshot-ul inițial — în acest caz
             // nu împingem body-ul înapoi în cod (ar șterge atribute din sursă și ar marca
             // tab-ul ca dirty fără edit real — steaua falsă la schimb de tab / flush).
-            if (!force && !isApplyingUndoRedo && designCleanBodyHtml !== null) {
+            if (!isApplyingUndoRedo && designCleanBodyHtml !== null) {
                 var _pristine = getDesignBodyHtml();
                 if (_pristine !== null && _pristine === designCleanBodyHtml) {
                     return;
@@ -8141,6 +8168,8 @@ if (isset($_GET['action'])) {
                                 fullTitle: tabs[i].fullTitle,
                                 editorContent: tabs[i].editorContent,
                                 originalContent: tabs[i].originalContent,
+                                cursorPos: tabs[i].cursorPos,
+                                scrollInfo: tabs[i].scrollInfo,
                                 viewMode: tabs[i].viewMode
                             });
                         }
