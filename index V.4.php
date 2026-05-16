@@ -5971,6 +5971,34 @@ if (isset($_GET['action'])) {
             }
         }
 
+        function normalizeBlockWrappedInlineFormat(html, tagName) {
+            var tagPattern = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            var wrappedBlocksRe = new RegExp('<' + tagPattern + '\\b[^>]*>\\s*((?:<p\\b[^>]*>[\\s\\S]*?<\\/p>\\s*)+)<\\/' + tagPattern + '>', 'gi');
+            var changed = false;
+            var out = String(html || '').replace(wrappedBlocksRe, function (_match, blocksHtml) {
+                changed = true;
+                return blocksHtml.replace(/<p\b([^>]*)>([\s\S]*?)<\/p>/gi, function (_p, attrs, inner) {
+                    var trimmed = String(inner || '').trim();
+                    if (!trimmed) return '';
+                    var alreadyWrappedRe = new RegExp('^<' + tagPattern + '\\b[^>]*>[\\s\\S]*<\\/' + tagPattern + '>$', 'i');
+                    if (alreadyWrappedRe.test(trimmed)) {
+                        return '<p' + attrs + '>' + inner + '</p>';
+                    }
+                    return '<p' + attrs + '><' + tagName + '>' + inner + '</' + tagName + '></p>';
+                });
+            });
+            if (!changed) return out;
+
+            // Remove the empty paragraphs that contentEditable creates at the
+            // selection boundaries when it wraps block elements in <em>/<strong>.
+            var emptyNormalP = '[\\t ]*<p\\b[^>]*\\bclass\\s*=\\s*["\'][^"\']*\\btext_obisnuit2?\\b[^"\']*["\'][^>]*>\\s*(?:<br\\s*\\/?>)?\\s*<\\/p>[\\t ]*';
+            var firstWrapped = '(<p\\b[^>]*>\\s*<' + tagPattern + '\\b[^>]*>)';
+            var lastWrapped = '(<\\/' + tagPattern + '>\\s*<\\/p>)';
+            out = out.replace(new RegExp('(^|\\n)' + emptyNormalP + '\\s*' + firstWrapped, 'gi'), '$1$2');
+            out = out.replace(new RegExp(lastWrapped + '\\s*' + emptyNormalP + '(?=\\n|$)', 'gi'), '$1');
+            return out;
+        }
+
         // In design mode, keep trailing spaces visible in editable article paragraphs.
         // This avoids the "space exists in code but not visible in design" confusion.
         function ensureDesignWhitespaceEditingStyle(doc) {
@@ -6013,6 +6041,8 @@ if (isset($_GET['action'])) {
             var rawInner = cleanNbspInHtml(doc.body.innerHTML);
             // Remove data-orig-class helper attribute so it never persists to saved code
             rawInner = rawInner.replace(/\s*data-orig-class="[^"]*"/gi, '');
+            rawInner = normalizeBlockWrappedInlineFormat(rawInner, 'em');
+            rawInner = normalizeBlockWrappedInlineFormat(rawInner, 'strong');
             // Note: space collapsing is handled per-node in collapseSpacesInDesignDOM()
             // to avoid destroying indentation in the code editor.
             // Ensure line breaks between block-level elements (Design outputs them on one line)
@@ -7701,6 +7731,129 @@ if (isset($_GET['action'])) {
             lastDesignSnapshot = getDesignBodyHtml();
         }
 
+        function getSelectedTextBlocks(doc, range) {
+            if (!doc || !doc.body || !range) return [];
+            var selector = 'p, div, h1, h2, h3, h4, h5, h6, li, td, th, blockquote';
+            return Array.from(doc.body.querySelectorAll(selector)).filter(function (block) {
+                if (!range.intersectsNode(block)) return false;
+                return rangeIntersectsNonEmptyText(doc, range, block);
+            });
+        }
+
+        function rangesOverlap(a, b) {
+            return a.compareBoundaryPoints(Range.START_TO_END, b) < 0 &&
+                a.compareBoundaryPoints(Range.END_TO_START, b) > 0;
+        }
+
+        function rangeIntersectsNonEmptyText(doc, range, root) {
+            var walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+            var node;
+            while ((node = walker.nextNode())) {
+                if (!node.nodeValue || !node.nodeValue.trim()) continue;
+                var textRange = doc.createRange();
+                textRange.selectNodeContents(node);
+                if (rangesOverlap(range, textRange)) return true;
+            }
+            return false;
+        }
+
+        function makeRangeInsideBlock(doc, sourceRange, block) {
+            var r = doc.createRange();
+            r.selectNodeContents(block);
+            if (block === sourceRange.startContainer || block.contains(sourceRange.startContainer)) {
+                r.setStart(sourceRange.startContainer, sourceRange.startOffset);
+            }
+            if (block === sourceRange.endContainer || block.contains(sourceRange.endContainer)) {
+                r.setEnd(sourceRange.endContainer, sourceRange.endOffset);
+            }
+            return r;
+        }
+
+        function rangeHasText(range) {
+            return !!(range && range.toString && range.toString().trim());
+        }
+
+        function selectedBlockTextNodesHaveFormat(doc, range, tagName) {
+            var walker = doc.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT, {
+                acceptNode: function (node) {
+                    if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+                    var textRange = doc.createRange();
+                    textRange.selectNodeContents(node);
+                    return rangesOverlap(range, textRange) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                }
+            });
+            var found = false;
+            var node;
+            while ((node = walker.nextNode())) {
+                found = true;
+                var parent = node.parentElement;
+                if (!parent || !parent.closest || !parent.closest(tagName)) return false;
+            }
+            return found;
+        }
+
+        function unwrapFormatInBlock(block, tagName) {
+            Array.from(block.querySelectorAll(tagName)).forEach(function (fmt) {
+                var parent = fmt.parentNode;
+                while (fmt.firstChild) parent.insertBefore(fmt.firstChild, fmt);
+                parent.removeChild(fmt);
+            });
+            block.normalize();
+        }
+
+        function wrapRangeContentsWithTag(doc, range, tagName) {
+            var wrapper = doc.createElement(tagName);
+            try {
+                range.surroundContents(wrapper);
+            } catch (e) {
+                var frag = range.extractContents();
+                wrapper.appendChild(frag);
+                range.insertNode(wrapper);
+            }
+            return wrapper;
+        }
+
+        function toggleInlineFormatAcrossBlocks(doc, sel, range, tagName) {
+            var blocks = getSelectedTextBlocks(doc, range);
+            if (blocks.length < 2) return false;
+
+            var ranges = [];
+            for (var i = 0; i < blocks.length; i++) {
+                var blockRange = makeRangeInsideBlock(doc, range, blocks[i]);
+                if (rangeHasText(blockRange)) {
+                    ranges.push({ block: blocks[i], range: blockRange });
+                }
+            }
+            if (ranges.length < 2) return false;
+
+            var shouldUnwrap = ranges.every(function (item) {
+                return selectedBlockTextNodesHaveFormat(doc, item.range, tagName);
+            });
+
+            var firstSelected = null;
+            var lastSelected = null;
+            ranges.forEach(function (item) {
+                if (shouldUnwrap) {
+                    unwrapFormatInBlock(item.block, tagName);
+                    if (!firstSelected) firstSelected = item.block;
+                    lastSelected = item.block;
+                    return;
+                }
+                var wrapper = wrapRangeContentsWithTag(doc, item.range, tagName);
+                if (!firstSelected) firstSelected = wrapper;
+                lastSelected = wrapper;
+            });
+
+            sel.removeAllRanges();
+            if (firstSelected && lastSelected) {
+                var newRange = doc.createRange();
+                newRange.setStartBefore(firstSelected);
+                newRange.setEndAfter(lastSelected);
+                sel.addRange(newRange);
+            }
+            return true;
+        }
+
         function toggleInlineFormat(kind) {
             // Push the current body state BEFORE the change so undo can revert it
             designPushCurrentState();
@@ -7708,6 +7861,11 @@ if (isset($_GET['action'])) {
             const info = getDesignSelectionRange();
             if (info && !info.range.collapsed) {
                 const { doc, sel, range } = info;
+                if (toggleInlineFormatAcrossBlocks(doc, sel, range, tagName)) {
+                    syncFromDesign();
+                    lastDesignSnapshot = getDesignBodyHtml();
+                    return;
+                }
                 // Save selected text for re-selection
                 const selectedText = range.toString();
                 let node = range.commonAncestorContainer;
@@ -7762,6 +7920,7 @@ if (isset($_GET['action'])) {
                 }
             }
             syncFromDesign();
+            applyCodeToDesignPanel();
             // Record the post-change state so the next snapshot won't double-push
             lastDesignSnapshot = getDesignBodyHtml();
         }
