@@ -1743,6 +1743,9 @@ if (isset($_GET['action'])) {
                         title="Aplică clasa text_obisnuit2 pe selecția din Design">B</button>
                     <button type="button" id="btnQuickItalic" class="btn btn-ghost"
                         title="Italic (&lt;em&gt;) pe selecția din Design (ca butonul I de jos)">I</button>
+                    <button type="button" id="btnVisualGreen" class="btn btn-ghost"
+                        title="Verde local doar in editor, fara modificare in fisier"
+                        style="color:#22c55e;font-weight:700">V</button>
                 </div>
                 <div class="viewmode-tabs" style="margin-left:12px">
                     <button type="button" id="btnBrowserTab" onclick="toggleBrowserPanel()"
@@ -1879,6 +1882,8 @@ if (isset($_GET['action'])) {
         let designSnapshotTimer = null;
         let designCleanCode = null; // exact editor code when design undo stack was initialized
         let designCleanBodyHtml = null; // initial browser-serialized body innerHTML for dirty comparison
+        let visualGreenUndoStack = [];
+        let visualGreenRedoStack = [];
 
         // ===== MULTI-TAB SYSTEM =====
         let tabs = [];
@@ -2372,6 +2377,7 @@ if (isset($_GET['action'])) {
                 document.getElementById('preview').src = 'about:blank';
                 designUndoStack = [];
                 designRedoStack = [];
+                clearVisualGreenHistory();
                 lastDesignSnapshot = null;
                 if (typeof deactivateSasa === 'function') deactivateSasa();
                 if (typeof deactivateCrop === 'function' && cropHighlightActive) deactivateCrop();
@@ -2529,6 +2535,26 @@ if (isset($_GET['action'])) {
 
         // ===== END MULTI-TAB SYSTEM =====
 
+        function unwrapEditorLocalVisualMarks(root) {
+            if (!root || !root.querySelectorAll) return;
+            Array.from(root.querySelectorAll('[data-editor-visual-badge-layer], [data-editor-visual-badge]')).forEach(function (el) {
+                if (el && el.parentNode) el.parentNode.removeChild(el);
+            });
+            Array.from(root.querySelectorAll('span[data-editor-visual-green]')).forEach(function (span) {
+                var parent = span.parentNode;
+                if (!parent) return;
+                while (span.firstChild) parent.insertBefore(span.firstChild, span);
+                parent.removeChild(span);
+            });
+        }
+
+        function stripEditorLocalVisualMarksFromHtml(html) {
+            var tmp = document.createElement('div');
+            tmp.innerHTML = String(html || '');
+            unwrapEditorLocalVisualMarks(tmp);
+            return tmp.innerHTML;
+        }
+
         function getDesignBodyHtml() {
             const iframe = document.getElementById('preview');
             const doc = iframe && iframe.contentDocument;
@@ -2536,11 +2562,87 @@ if (isset($_GET['action'])) {
             // Strip CROP highlight styles before reading so snapshots are always clean
             if (cropHighlightActive) {
                 clearSasaDesignHighlight(doc);
-                const html = doc.body.innerHTML;
+                const clone = doc.body.cloneNode(true);
+                unwrapEditorLocalVisualMarks(clone);
+                const html = clone.innerHTML;
                 highlightSasaInDesign('crop');
                 return html;
             }
-            return doc.body.innerHTML;
+            const clone = doc.body.cloneNode(true);
+            unwrapEditorLocalVisualMarks(clone);
+            return clone.innerHTML;
+        }
+
+        function stripEditorVisualBadges(root) {
+            if (!root || !root.querySelectorAll) return;
+            Array.from(root.querySelectorAll('[data-editor-visual-badge-layer], [data-editor-visual-badge]')).forEach(function (el) {
+                if (el && el.parentNode) el.parentNode.removeChild(el);
+            });
+        }
+
+        function getVisualGreenBodyHtml() {
+            const iframe = document.getElementById('preview');
+            const doc = iframe && iframe.contentDocument;
+            if (!doc || !doc.body) return null;
+            const clone = doc.body.cloneNode(true);
+            stripEditorVisualBadges(clone);
+            return clone.innerHTML;
+        }
+
+        function clearVisualGreenHistory() {
+            visualGreenUndoStack = [];
+            visualGreenRedoStack = [];
+        }
+
+        function pushVisualGreenUndoSnapshot(html) {
+            if (html == null) html = getVisualGreenBodyHtml();
+            if (html == null) return;
+            if (visualGreenUndoStack.length > 0 && visualGreenUndoStack[visualGreenUndoStack.length - 1].html === html) return;
+            visualGreenUndoStack.push({ html: html, scrollY: getDesignScrollY() });
+            if (visualGreenUndoStack.length > 300) visualGreenUndoStack.shift();
+            visualGreenRedoStack = [];
+        }
+
+        function applyVisualGreenBodyHtml(entry) {
+            if (!entry || entry.html == null) return false;
+            const iframe = document.getElementById('preview');
+            const doc = iframe && iframe.contentDocument;
+            if (!doc || !doc.body) return false;
+            const win = iframe.contentWindow;
+            isApplyingUndoRedo = true;
+            isSyncFromCode = true;
+            doc.body.innerHTML = entry.html;
+            isSyncFromCode = false;
+            isApplyingUndoRedo = false;
+            ensureDesignWhitespaceEditingStyle(doc);
+            updateVisualGreenBadges(doc);
+            if (win) {
+                win.scrollTo(0, entry.scrollY || 0);
+                setTimeout(() => { try { win.scrollTo(0, entry.scrollY || 0); } catch (e) {} }, 50);
+            }
+            lastDesignSelectionRange = null;
+            lastDesignSelectionDoc = null;
+            return true;
+        }
+
+        function doVisualGreenUndo() {
+            if (visualGreenUndoStack.length === 0) return false;
+            const current = getVisualGreenBodyHtml();
+            if (current != null) {
+                visualGreenRedoStack.push({ html: current, scrollY: getDesignScrollY() });
+                if (visualGreenRedoStack.length > 300) visualGreenRedoStack.shift();
+            }
+            return applyVisualGreenBodyHtml(visualGreenUndoStack.pop());
+        }
+
+        function doVisualGreenRedo() {
+            if (visualGreenRedoStack.length === 0) return false;
+            const current = getVisualGreenBodyHtml();
+            if (current != null) {
+                visualGreenUndoStack.push({ html: current, scrollY: getDesignScrollY() });
+                if (visualGreenUndoStack.length > 300) visualGreenUndoStack.shift();
+            }
+            return applyVisualGreenBodyHtml(visualGreenRedoStack.pop());
         }
 
         // Push current body state into the undo stack.
@@ -2612,6 +2714,7 @@ if (isset($_GET['action'])) {
         function designResetUndoStack() {
             designUndoStack = [];
             designRedoStack = [];
+            clearVisualGreenHistory();
             lastDesignSnapshot = getDesignBodyHtml();
             designCleanBodyHtml = lastDesignSnapshot; // save initial body for dirty comparison
             designCleanCode = editor ? editor.getValue() : null;
@@ -5000,6 +5103,16 @@ if (isset($_GET['action'])) {
                 'Alt-A': cm => { cm.replaceSelection('â'); },
             });
 
+            editor.on('keydown', (cm, e) => {
+                if (e.ctrlKey || e.metaKey || e.altKey || !(e.key === 'v' || e.key === 'V')) return;
+                if (!cm.somethingSelected || !cm.somethingSelected()) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (!applyLocalVisualGreenFromCodeSelection()) {
+                    showToast('Selectia din cod nu a putut fi marcata verde in Design', 'warning');
+                }
+            });
+
             // ── Paste into empty / selected <p> blocks (code editor) ──
             // Rich HTML / entity-encoded tags from the clipboard (e.g. DeepSeek) are
             // reduced to plain text, then wrapped only in <p class="text_obisnuit">…</p>.
@@ -5435,6 +5548,13 @@ if (isset($_GET['action'])) {
                 const activeEl = document.activeElement;
                 const activeTag = activeEl && activeEl.tagName ? activeEl.tagName.toLowerCase() : '';
                 const isPlainInput = activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select';
+                if (!isPlainInput && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+                    if (applyVisualGreenShortcut()) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return;
+                    }
+                }
                 if ((e.ctrlKey || e.metaKey) && !isPlainInput &&
                     (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
                     e.preventDefault();
@@ -5733,6 +5853,7 @@ if (isset($_GET['action'])) {
                     fullTitle: fullT,
                     editorContent: data.content,
                     originalContent: data.content,
+                    viewMode: 'design',
                     lastPreviewHadBody: /<body\b/i.test(data.content)
                 });
                 tabs.push(tab);
@@ -5740,6 +5861,7 @@ if (isset($_GET['action'])) {
 
                 currentFile = data.file;
                 addToRecentFiles(currentFile);
+                setViewMode('design');
                 _isRestoringTab = true;
                 isSyncFromDesign = true;
                 editor.setValue(data.content);
@@ -5755,9 +5877,10 @@ if (isset($_GET['action'])) {
                 isDirty = false;
                 designUndoStack = [];
                 designRedoStack = [];
+                clearVisualGreenHistory();
                 lastDesignSnapshot = null;
 
-                setViewMode(tab.viewMode);
+                setViewMode('design');
                 renderTabs();
                 hideOverlay();
                 refreshTabLinkedCategory(tab);
@@ -6037,6 +6160,17 @@ if (isset($_GET['action'])) {
                 'body[contenteditable=\"true\"] p.text_obisnuit,' +
                 'body[contenteditable=\"true\"] p.text_obisnuit2 {' +
                 ' white-space: break-spaces !important;' +
+                '}' +
+                'span[data-editor-visual-green=\"1\"]{' +
+                ' color:#16a34a!important;' +
+                '}' +
+                '[data-editor-visual-badge-layer]{' +
+                ' position:absolute!important;left:0;top:0;width:0;height:0;z-index:2147483640!important;pointer-events:none!important;' +
+                '}' +
+                '[data-editor-visual-badge]{' +
+                ' position:absolute!important;width:24px;height:24px;line-height:24px;text-align:center;border-radius:999px;' +
+                ' background:#c91f1f!important;color:#fff!important;border:2px solid #fff!important;box-shadow:0 1px 6px rgba(0,0,0,.35)!important;' +
+                ' font:700 14px/22px Arial,sans-serif!important;cursor:pointer!important;pointer-events:auto!important;user-select:none!important;' +
                 '}';
             doc.head.appendChild(st);
         }
@@ -6066,6 +6200,7 @@ if (isset($_GET['action'])) {
             cleanupParagraphBoundaryBrArtifacts(doc);
             // Replace &nbsp; with regular space in SASA region and h1.den_articol
             var rawInner = cleanNbspInHtml(doc.body.innerHTML);
+            rawInner = stripEditorLocalVisualMarksFromHtml(rawInner);
             // Remove data-orig-class helper attribute so it never persists to saved code
             rawInner = rawInner.replace(/\s*data-orig-class="[^"]*"/gi, '');
             rawInner = normalizeBlockWrappedInlineFormat(rawInner, 'em');
@@ -6277,6 +6412,7 @@ if (isset($_GET['action'])) {
                 // because execCommand can destroy parent DOM structure (tags, classes,
                 // links) when replacing the entire content of an element.
                 e.preventDefault();
+                clearVisualGreenHistory();
                 let text = (e.clipboardData || window.clipboardData).getData('text/plain');
                 if (!text) return;
                 // Collapse multiple consecutive spaces into one
@@ -6387,11 +6523,13 @@ if (isset($_GET['action'])) {
             doc.body.addEventListener('input', () => {
                 if (isApplyingUndoRedo) return;
                 if (_suppressInputAfterCopy) return;
+                clearVisualGreenHistory();
                 // Clear design-click highlight when user edits in design
                 if (_imgClickMark) { _imgClickMark.clear(); _imgClickMark = null; }
                 // Collapse multiple spaces in design DOM text nodes (real-time cleanup)
                 collapseSpacesInDesignDOM(doc);
                 cleanupParagraphBoundaryBrArtifacts(doc);
+                setTimeout(function () { updateVisualGreenBadges(doc); }, 90);
                 clearTimeout(designInputDebounceTimer);
                 designInputDebounceTimer = setTimeout(syncFromDesign, 80);
             });
@@ -6423,11 +6561,18 @@ if (isset($_GET['action'])) {
             doc.addEventListener('selectionchange', () => {
                 clearTimeout(_selChangeTimer);
                 _selChangeTimer = setTimeout(() => {
+                    rememberDesignSelectionRange();
                     if (!isSelectionFromCode) updatePropertiesPanelFromSelection();
                 }, 60);
             });
-            doc.addEventListener('mouseup', updatePropertiesPanelFromSelection);
-            doc.addEventListener('keyup', updatePropertiesPanelFromSelection);
+            doc.addEventListener('mouseup', () => {
+                rememberDesignSelectionRange();
+                updatePropertiesPanelFromSelection();
+            });
+            doc.addEventListener('keyup', () => {
+                rememberDesignSelectionRange();
+                updatePropertiesPanelFromSelection();
+            });
             // ── Intercept mousedown on images inside anchors so we can
             //    select the <img> before the browser's default behaviour. ──
             doc.addEventListener('mousedown', e => {
@@ -6484,6 +6629,14 @@ if (isset($_GET['action'])) {
                 if (typeof syncClickedElementToCode === 'function') syncClickedElementToCode(target);
             }, true);
             doc.addEventListener('keydown', e => {
+                if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+                    if (applyVisualGreenShortcut()) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        _lastCtrlComboTime = Date.now();
+                        return;
+                    }
+                }
                 // ── SASA selection intercept for DESIGN panel ──
                 // When SASA is active and user types/deletes in design, the visual
                 // highlight is NOT a real browser selection so contentEditable can't
@@ -6542,6 +6695,7 @@ if (isset($_GET['action'])) {
                 if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
                     e.preventDefault();
                     e.stopPropagation();
+                    clearVisualGreenHistory();
                     designSaveSnapshot();
                     const win = iframe.contentWindow;
                     const sel = win && win.getSelection();
@@ -6689,6 +6843,7 @@ if (isset($_GET['action'])) {
 
         function doUndoFromDesign() {
             if (!editor) return;
+            if (doVisualGreenUndo()) return;
             // In Code view (sau pentru fisiere non-HTML), folosim undo-ul nativ al editorului de cod.
             if (!isCurrentFileHtml() || viewMode === 'code') {
                 try { editor.undo(); } catch (e) { }
@@ -6771,6 +6926,7 @@ if (isset($_GET['action'])) {
 
         function doRedoFromDesign() {
             if (!editor) return;
+            if (doVisualGreenRedo()) return;
             // In Code view (sau pentru fisiere non-HTML), folosim redo-ul nativ al editorului de cod.
             if (!isCurrentFileHtml() || viewMode === 'code') {
                 try { editor.redo(); } catch (e) { }
@@ -7086,7 +7242,55 @@ if (isset($_GET['action'])) {
             return node.closest('img, p, span, div, td, th, li, h1, h2, h3, h4, h5, h6, a, strong, em');
         }
 
-        function getDesignSelectionRange() {
+        let lastDesignSelectionRange = null;
+        let lastDesignSelectionDoc = null;
+
+        function designRangeStillInDocument(doc, range) {
+            if (!doc || !range || !doc.body) return false;
+            const node = range.commonAncestorContainer;
+            return node === doc.body || doc.body.contains(node.nodeType === Node.TEXT_NODE ? node.parentNode : node);
+        }
+
+        function rememberDesignSelectionRange() {
+            const iframe = document.getElementById('preview');
+            const win = iframe.contentWindow;
+            const doc = iframe.contentDocument;
+            if (!win || !doc) return false;
+            const sel = win.getSelection();
+            if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+            try {
+                const range = sel.getRangeAt(0);
+                if (!range || range.collapsed) return false;
+                lastDesignSelectionRange = range.cloneRange();
+                lastDesignSelectionDoc = doc;
+                return true;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function getDesignSelectionRange(useCached) {
+            const iframe = document.getElementById('preview');
+            const win = iframe.contentWindow;
+            const doc = iframe.contentDocument;
+            if (!win || !doc) return null;
+            const sel = win.getSelection();
+            if (sel && sel.rangeCount > 0) {
+                const range = sel.getRangeAt(0);
+                if (range && !range.collapsed) {
+                    lastDesignSelectionRange = range.cloneRange();
+                    lastDesignSelectionDoc = doc;
+                    return { win, doc, sel, range };
+                }
+                if (!useCached) return { win, doc, sel, range };
+            }
+            if (useCached && lastDesignSelectionDoc === doc && designRangeStillInDocument(doc, lastDesignSelectionRange)) {
+                return { win, doc, sel, range: lastDesignSelectionRange.cloneRange(), cached: true };
+            }
+            return null;
+        }
+
+        function getDesignSelectionRangeCurrentOnly() {
             const iframe = document.getElementById('preview');
             const win = iframe.contentWindow;
             const doc = iframe.contentDocument;
@@ -7700,9 +7904,98 @@ if (isset($_GET['action'])) {
             return '#' + [1, 2, 3].map(i => ('0' + parseInt(m[i], 10).toString(16)).slice(-2)).join('');
         }
 
+        function unwrapVisualGreenSpans(root) {
+            if (!root) return 0;
+            var spans = [];
+            if (root.matches && root.matches('span[data-editor-visual-green]')) spans.push(root);
+            if (root.querySelectorAll) {
+                spans = spans.concat(Array.from(root.querySelectorAll('span[data-editor-visual-green]')));
+            }
+            spans.forEach(function (span) {
+                var parent = span.parentNode;
+                if (!parent) return;
+                while (span.firstChild) parent.insertBefore(span.firstChild, span);
+                parent.removeChild(span);
+                if (parent.normalize) parent.normalize();
+            });
+            return spans.length;
+        }
+
+        function closestVisualGreenBlock(span, doc) {
+            if (!span || !span.closest) return null;
+            return span.closest('p,h1,h2,h3,h4,h5,h6,li,td,th,blockquote,section,article,div') ||
+                (span.parentElement && span.parentElement !== doc.body ? span.parentElement : null);
+        }
+
+        function updateVisualGreenBadges(doc) {
+            if (!doc) {
+                const iframe = document.getElementById('preview');
+                doc = iframe && iframe.contentDocument;
+            }
+            if (!doc || !doc.body) return;
+            ensureDesignWhitespaceEditingStyle(doc);
+            Array.from(doc.querySelectorAll('[data-editor-visual-badge-layer]')).forEach(function (layer) {
+                if (layer.parentNode) layer.parentNode.removeChild(layer);
+            });
+            const greenSpans = Array.from(doc.querySelectorAll('span[data-editor-visual-green]'));
+            if (!greenSpans.length) return;
+            const seen = new Set();
+            const blocks = [];
+            greenSpans.forEach(function (span) {
+                const block = closestVisualGreenBlock(span, doc);
+                if (!block || block === doc.body || seen.has(block)) return;
+                seen.add(block);
+                blocks.push(block);
+            });
+            blocks.sort(function (a, b) {
+                const ra = a.getBoundingClientRect();
+                const rb = b.getBoundingClientRect();
+                return (ra.top - rb.top) || (ra.left - rb.left);
+            });
+            const layer = doc.createElement('div');
+            layer.id = 'editorVisualGreenBadgesLayer';
+            layer.setAttribute('data-editor-visual-badge-layer', '1');
+            layer.setAttribute('contenteditable', 'false');
+            doc.body.appendChild(layer);
+            const win = doc.defaultView || window;
+            blocks.forEach(function (block, idx) {
+                const rect = block.getBoundingClientRect();
+                if (!rect || (rect.width === 0 && rect.height === 0)) return;
+                const badge = doc.createElement('span');
+                badge.setAttribute('data-editor-visual-badge', '1');
+                badge.setAttribute('contenteditable', 'false');
+                badge.textContent = String(idx + 1);
+                badge.title = 'Dublu click: sterge verdele din acest paragraf';
+                badge.style.left = Math.max(6, rect.left + (win.scrollX || 0) - 38) + 'px';
+                badge.style.top = (rect.top + (win.scrollY || 0) + Math.max(0, Math.min(12, rect.height / 2 - 12))) + 'px';
+                badge.addEventListener('mousedown', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+                badge.addEventListener('dblclick', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    removeVisualGreenFromBlock(block);
+                });
+                layer.appendChild(badge);
+            });
+        }
+
+        function removeVisualGreenFromBlock(block) {
+            if (!block) return false;
+            const before = getVisualGreenBodyHtml();
+            const removed = unwrapVisualGreenSpans(block);
+            if (!removed) return false;
+            pushVisualGreenUndoSnapshot(before);
+            updateVisualGreenBadges(block.ownerDocument);
+            showToast('Verdele din paragraf a fost sters', 'success');
+            return true;
+        }
+
         function applyFontProperty(prop, value) {
             // Push the current body state BEFORE the change so undo can revert it.
             // Uses 500ms grouping so dragging the color picker only creates ONE undo entry.
+            clearVisualGreenHistory();
             designPushCurrentState();
             const info = getDesignSelectionRange();
             if (info && !info.range.collapsed) {
@@ -7730,7 +8023,98 @@ if (isset($_GET['action'])) {
             lastDesignSnapshot = getDesignBodyHtml();
         }
 
+        function rangeTouchesTextNode(doc, range, node) {
+            try {
+                if (range && range.intersectsNode) return range.intersectsNode(node);
+            } catch (e) {}
+            var textRange = doc.createRange();
+            textRange.selectNodeContents(node);
+            return rangesOverlap(range, textRange);
+        }
+
+        function collectTextRangesForLocalVisual(doc, range) {
+            var root = range.commonAncestorContainer;
+            if (root.nodeType === Node.TEXT_NODE) root = root.parentNode;
+            if (!root) root = doc.body;
+            var walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+                acceptNode: function (node) {
+                    if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
+                    return rangeTouchesTextNode(doc, range, node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                }
+            });
+            var items = [];
+            var node;
+            while ((node = walker.nextNode())) {
+                var start = (node === range.startContainer) ? range.startOffset : 0;
+                var end = (node === range.endContainer) ? range.endOffset : node.nodeValue.length;
+                if (start < end) items.push({ node: node, start: start, end: end });
+            }
+            return items;
+        }
+
+        function applyLocalVisualGreen(useCached) {
+            const info = getDesignSelectionRange(useCached !== false);
+            if (!info || !info.range || info.range.collapsed) return false;
+            const { doc, sel, range } = info;
+            ensureDesignWhitespaceEditingStyle(doc);
+
+            var items = collectTextRangesForLocalVisual(doc, range);
+            if (!items.length) return false;
+
+            var wrappers = [];
+            for (var i = items.length - 1; i >= 0; i--) {
+                var item = items[i];
+                var node = item.node;
+                if (!node || !node.parentNode) continue;
+                var parentEl = node.parentElement;
+                if (parentEl && parentEl.closest && parentEl.closest('span[data-editor-visual-green]')) {
+                    continue;
+                }
+                var selectedNode = node;
+                if (item.end < selectedNode.nodeValue.length) {
+                    selectedNode.splitText(item.end);
+                }
+                if (item.start > 0) {
+                    selectedNode = selectedNode.splitText(item.start);
+                }
+                if (!selectedNode.nodeValue) continue;
+                var span = doc.createElement('span');
+                span.setAttribute('data-editor-visual-green', '1');
+                selectedNode.parentNode.insertBefore(span, selectedNode);
+                span.appendChild(selectedNode);
+                wrappers.unshift(span);
+            }
+
+            if (wrappers.length) {
+                sel.removeAllRanges();
+                var newRange = doc.createRange();
+                newRange.setStartBefore(wrappers[0]);
+                newRange.setEndAfter(wrappers[wrappers.length - 1]);
+                sel.addRange(newRange);
+                return true;
+            }
+            return false;
+        }
+
+        function applyLocalVisualGreenFromCodeSelection() {
+            if (!editor || !editor.somethingSelected || !editor.somethingSelected()) return false;
+            syncSelectionToDesignFromCode();
+            return applyLocalVisualGreen(true);
+        }
+
+        function applyVisualGreenShortcut() {
+            const before = getVisualGreenBodyHtml();
+            const changed = applyLocalVisualGreen(false) ||
+                applyLocalVisualGreenFromCodeSelection() ||
+                applyLocalVisualGreen(true);
+            if (!changed) return false;
+            pushVisualGreenUndoSnapshot(before);
+            updateVisualGreenBadges();
+            return true;
+        }
+
         function applyLinkProperty() {
+            clearVisualGreenHistory();
             designPushCurrentState();
             var linkVal = document.getElementById('propLink').value.trim();
             var targetVal = document.getElementById('propLinkTarget').value;
@@ -7932,6 +8316,7 @@ if (isset($_GET['action'])) {
 
         function toggleInlineFormat(kind) {
             // Push the current body state BEFORE the change so undo can revert it
+            clearVisualGreenHistory();
             designPushCurrentState();
             const tagName = kind === 'bold' ? 'strong' : 'em';
             const info = getDesignSelectionRange();
@@ -8038,6 +8423,7 @@ if (isset($_GET['action'])) {
 
         function applyClassProperty(value) {
             // Push the current body state BEFORE the change so undo can revert it
+            clearVisualGreenHistory();
             designPushCurrentState();
             const info = getDesignSelectionRange();
             if (info && !info.range.collapsed) {
@@ -8219,6 +8605,7 @@ if (isset($_GET['action'])) {
                     fullTitle: fullT,
                     editorContent: cnt,
                     originalContent: cnt,
+                    viewMode: 'design',
                     lastPreviewHadBody: /<body\b/i.test(cnt)
                 });
                 tabs.push(tab);
@@ -8226,6 +8613,7 @@ if (isset($_GET['action'])) {
 
                 currentFile = data.file;
                 addToRecentFiles(currentFile);
+                setViewMode('design');
                 _isRestoringTab = true;
                 isSyncFromDesign = true;
                 editor.setValue(data.content || '');
@@ -8240,8 +8628,10 @@ if (isset($_GET['action'])) {
                 isDirty = false;
                 designUndoStack = [];
                 designRedoStack = [];
+                clearVisualGreenHistory();
                 lastDesignSnapshot = null;
 
+                setViewMode('design');
                 renderTabs();
                 hideOverlay();
                 dropStatus('');
@@ -8292,6 +8682,7 @@ if (isset($_GET['action'])) {
                     fullTitle: fullT,
                     editorContent: content,
                     originalContent: content,
+                    viewMode: 'design',
                     lastPreviewHadBody: /<body\b/i.test(content)
                 });
                 tabs.push(tab);
@@ -8299,6 +8690,7 @@ if (isset($_GET['action'])) {
                 var newTabId = tab.id;
 
                 currentFile = null;
+                setViewMode('design');
                 _isRestoringTab = true;
                 isSyncFromDesign = true;
                 editor.setValue(content);
@@ -8315,6 +8707,7 @@ if (isset($_GET['action'])) {
                 designRedoStack = [];
                 lastDesignSnapshot = null;
 
+                setViewMode('design');
                 renderTabs();
                 hideOverlay();
                 dropStatus('');
@@ -8444,6 +8837,13 @@ if (isset($_GET['action'])) {
                 if (e.key === 'Enter') { e.preventDefault(); openFromPath(); }
             });
 
+            const btnVisualGreen = document.getElementById('btnVisualGreen');
+            if (btnVisualGreen) {
+                btnVisualGreen.addEventListener('mousedown', e => e.preventDefault());
+                btnVisualGreen.addEventListener('click', () => {
+                    if (!applyVisualGreenShortcut()) showToast('Selecteaza text in Design pentru verde', 'warning');
+                });
+            }
 
             const dz = document.getElementById('dropZone');
             const fp = document.getElementById('filePicker');
