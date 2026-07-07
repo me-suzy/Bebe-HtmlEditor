@@ -6000,71 +6000,6 @@ if (isset($_GET['action'])) {
             }
         }
 
-        function repairOrphanTextNearEmptyBlocks(doc, sel) {
-            if (!doc || !doc.body || !doc.body.querySelectorAll) return false;
-            let repaired = false;
-
-            function textForCompare(value) {
-                return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
-            }
-
-            function isEmptyEditableBlock(block) {
-                if (!block || !block.matches || !block.matches('p, h1, h2, h3, h4, h5, h6')) return false;
-                if (textForCompare(block.textContent)) return false;
-                return !block.querySelector('img, br, hr, input, svg, video, audio, iframe, canvas, embed, object');
-            }
-
-            function adjacentText(block, direction) {
-                let cur = direction < 0 ? block.previousSibling : block.nextSibling;
-                while (cur && (
-                    (cur.nodeType === Node.TEXT_NODE && !cur.nodeValue.trim()) ||
-                    cur.nodeType === Node.COMMENT_NODE
-                )) {
-                    cur = direction < 0 ? cur.previousSibling : cur.nextSibling;
-                }
-                return cur && cur.nodeType === Node.TEXT_NODE && cur.nodeValue.trim() ? cur : null;
-            }
-
-            function placeCaretAtEnd(node) {
-                if (!sel || !node) return;
-                const range = doc.createRange();
-                if (node.nodeType === Node.TEXT_NODE) {
-                    range.setStart(node, node.nodeValue.length);
-                    range.setEnd(node, node.nodeValue.length);
-                } else {
-                    range.selectNodeContents(node);
-                    range.collapse(false);
-                }
-                sel.removeAllRanges();
-                sel.addRange(range);
-            }
-
-            const blocks = Array.from(doc.body.querySelectorAll('p, h1, h2, h3, h4, h5, h6'));
-            for (let i = 0; i < blocks.length; i++) {
-                const block = blocks[i];
-                if (!isEmptyEditableBlock(block)) continue;
-                const textNode = adjacentText(block, 1) || adjacentText(block, -1);
-                if (!textNode || !textNode.parentNode) continue;
-                const text = textNode.nodeValue;
-                textNode.parentNode.removeChild(textNode);
-                block.textContent = text;
-                block.normalize();
-                placeCaretAtEnd(block.firstChild || block);
-                repaired = true;
-            }
-            return repaired;
-        }
-
-        function repairEmptyBlockOrphanTextInHtml(html) {
-            return String(html || '').replace(
-                /<((p|h[1-6])\b[^>]*)>\s*<\/\2>([^<]+)(?=<)/gi,
-                function (match, openTag, tagName, text) {
-                    if (!String(text || '').trim()) return match;
-                    return '<' + openTag + '>' + text + '</' + tagName + '>';
-                }
-            );
-        }
-
         function normalizeBlockWrappedInlineFormat(html, tagName) {
             var tagPattern = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             var wrappedBlocksRe = new RegExp('<' + tagPattern + '\\b[^>]*>\\s*((?:<p\\b[^>]*>[\\s\\S]*?<\\/p>\\s*)+)<\\/' + tagPattern + '>', 'gi');
@@ -6093,6 +6028,39 @@ if (isset($_GET['action'])) {
             return out;
         }
 
+        // Fix invalid markup produced when a block paragraph gets wrapped in a span
+        // instead of having its class changed: <span class="text_obisnuit2"><p class="text_obisnuit">…</p></span>
+        // → <p class="text_obisnuit2">…</p>
+        function normalizeSpanWrappedParagraphClass(html) {
+            return String(html || '').replace(
+                /<span\b[^>]*\bclass\s*=\s*["']([^"']+)["'][^>]*>\s*<p\b([^>]*)>([\s\S]*?)<\/p>\s*<\/span>/gi,
+                function (match, spanClass, pAttrs, inner) {
+                    var mainClass = String(spanClass || '').trim().split(/\s+/)[0];
+                    if (!mainClass) return match;
+                    if (typeof cssClasses !== 'undefined' && cssClasses.length && cssClasses.indexOf(mainClass) === -1) {
+                        return match;
+                    }
+                    var newAttrs = String(pAttrs || '');
+                    if (/\bclass\s*=/i.test(newAttrs)) {
+                        newAttrs = newAttrs.replace(/\bclass\s*=\s*["'][^"']*["']/i, 'class="' + mainClass + '"');
+                    } else {
+                        newAttrs = ' class="' + mainClass + '"' + newAttrs;
+                    }
+                    return '<p' + newAttrs + '>' + inner + '</p>';
+                }
+            );
+        }
+
+        function designSelectionHasCssClass(el, className) {
+            if (!el || !className) return false;
+            var node = el;
+            while (node && node.nodeType === 1 && node.tagName !== 'BODY') {
+                if (node.classList && node.classList.contains(className)) return true;
+                node = node.parentElement;
+            }
+            return false;
+        }
+
         // In design mode, keep trailing spaces visible in editable article paragraphs.
         // This avoids the "space exists in code but not visible in design" confusion.
         function ensureDesignWhitespaceEditingStyle(doc) {
@@ -6117,7 +6085,6 @@ if (isset($_GET['action'])) {
             const bodyRe = /<body([^>]*)>[\s\S]*<\/body>/i;
             const bodyMatch = bodyRe.exec(full);
             if (!bodyMatch) return;
-            repairOrphanTextNearEmptyBlocks(doc);
             // Preview-ul PHP (action=preview) poate sanitiza <body> față de sursa din editor
             // (fără on*, <i>→<em>, etc.). Dacă utilizatorul nu a modificat deloc design-ul,
             // innerHTML-ul din iframe rămâne identic cu snapshot-ul inițial — în acest caz
@@ -6134,11 +6101,22 @@ if (isset($_GET['action'])) {
             cleanupParagraphBoundaryBrArtifacts(doc);
             // Replace &nbsp; with regular space in SASA region and h1.den_articol
             var rawInner = cleanNbspInHtml(doc.body.innerHTML);
-            rawInner = repairEmptyBlockOrphanTextInHtml(rawInner);
             // Remove data-orig-class helper attribute so it never persists to saved code
             rawInner = rawInner.replace(/\s*data-orig-class="[^"]*"/gi, '');
+            // Safety net: fold accidental orphan text back into the emptied block
+            // tag next to it ("<p ...></p>text" / "<h1 ...></h1>text" become
+            // "<p ...>text</p>" / "<h1 ...>text</h1>"). This shape appears when a
+            // paste/edit destroys a block's contents and drops the text after it.
+            rawInner = rawInner.replace(
+                /<((p|h[1-6])\b[^>]*)>\s*<\/\2>([^<]+)(?=<|$)/gi,
+                function (match, openTag, tagName, orphanText) {
+                    if (!orphanText.trim()) return match;
+                    return '<' + openTag + '>' + orphanText + '</' + tagName + '>';
+                }
+            );
             rawInner = normalizeBlockWrappedInlineFormat(rawInner, 'em');
             rawInner = normalizeBlockWrappedInlineFormat(rawInner, 'strong');
+            rawInner = normalizeSpanWrappedParagraphClass(rawInner);
             // Note: space collapsing is handled per-node in collapseSpacesInDesignDOM()
             // to avoid destroying indentation in the code editor.
             // Ensure line breaks between block-level elements (Design outputs them on one line)
@@ -6296,6 +6274,14 @@ if (isset($_GET['action'])) {
                 return null;
             }
 
+            function closestPasteBlock(node) {
+                while (node && node !== doc.body) {
+                    if (node.nodeType === Node.ELEMENT_NODE && /^(?:P|H[1-6])$/.test(node.tagName)) return node;
+                    node = node.parentNode;
+                }
+                return null;
+            }
+
             function normalizePasteCompareText(value) {
                 return String(value || '')
                     .replace(/\u00a0/g, ' ')
@@ -6303,91 +6289,60 @@ if (isset($_GET['action'])) {
                     .trim();
             }
 
-            function closestPasteReplaceBlock(node) {
-                const selector = 'p, h1, h2, h3, h4, h5, h6';
-                if (!node) return null;
-                if (node.nodeType === Node.TEXT_NODE) node = node.parentNode;
-                while (node && node !== doc.body) {
-                    if (node.nodeType === Node.ELEMENT_NODE && node.matches && node.matches(selector)) return node;
-                    node = node.parentNode;
-                }
-                return null;
-            }
-
-            function selectedElementFromRangeBoundary(range) {
-                if (!range || range.startContainer !== range.endContainer) return null;
-                if (range.startContainer.nodeType !== Node.ELEMENT_NODE) return null;
-                if (range.endOffset - range.startOffset !== 1) return null;
-                const child = range.startContainer.childNodes[range.startOffset];
-                return child && child.nodeType === Node.ELEMENT_NODE ? child : null;
-            }
-
-            function collectPasteReplaceBlockCandidates(range) {
-                const out = [];
-                const seen = new Set();
-                function add(el) {
-                    el = closestPasteReplaceBlock(el);
-                    if (!el || seen.has(el)) return;
-                    seen.add(el);
-                    out.push(el);
-                }
-                add(selectedElementFromRangeBoundary(range));
-                add(range.startContainer);
-                add(range.endContainer);
-                add(range.commonAncestorContainer);
-                if (range.startContainer && range.startContainer.nodeType === Node.ELEMENT_NODE) {
-                    add(range.startContainer.childNodes[range.startOffset]);
-                }
-                if (range.endContainer && range.endContainer.nodeType === Node.ELEMENT_NODE) {
-                    add(range.endContainer.childNodes[Math.max(0, range.endOffset - 1)]);
-                }
-                return out;
-            }
-
-            function replaceWholeBlockTextAtSelection(range, text, sel) {
-                const selectedText = normalizePasteCompareText(range && range.toString ? range.toString() : '');
-                if (!selectedText) return false;
-                const blocks = collectPasteReplaceBlockCandidates(range);
+            // Block tags (<p>/<h1>-<h6>) that the selection wraps COMPLETELY.
+            // Happens when the selection is anchored in the whitespace between
+            // tags (double/triple-click can stretch the selection past the
+            // element edges). deleteContents() would then destroy the tag and
+            // leave the pasted text orphaned between blocks: <p ...></p>text.
+            function blocksFullyInsideRange(range) {
+                let root = range.commonAncestorContainer;
+                if (root && root.nodeType !== Node.ELEMENT_NODE) root = root.parentNode;
+                if (!root || !root.querySelectorAll) return [];
+                const found = [];
+                const blocks = root.querySelectorAll('p, h1, h2, h3, h4, h5, h6');
                 for (let i = 0; i < blocks.length; i++) {
-                    const block = blocks[i];
-                    const blockText = normalizePasteCompareText(block.textContent);
-                    // Accept exact match OR when the selection contains the full
-                    // block text (triple-click may include trailing whitespace
-                    // from a following sibling or newline).
-                    if (blockText !== selectedText &&
-                        !selectedText.startsWith(blockText) &&
-                        !selectedText.endsWith(blockText)) continue;
-                    block.textContent = text;
-                    block.normalize();
-                    const caretNode = block.firstChild || block.appendChild(doc.createTextNode(''));
-                    const newRange = doc.createRange();
-                    newRange.setStart(caretNode, caretNode.nodeValue.length);
-                    newRange.setEnd(caretNode, caretNode.nodeValue.length);
-                    sel.removeAllRanges();
-                    sel.addRange(newRange);
-                    return true;
-                }
-                // Fallback: if the range start container IS a block element and
-                // the selection covers all its text, replace directly.
-                const sc = range.startContainer;
-                if (sc && sc.nodeType === Node.ELEMENT_NODE &&
-                    sc.matches && sc.matches('p, h1, h2, h3, h4, h5, h6')) {
-                    const blockText = normalizePasteCompareText(sc.textContent);
-                    if (blockText && (blockText === selectedText ||
-                        selectedText.startsWith(blockText) ||
-                        selectedText.endsWith(blockText))) {
-                        sc.textContent = text;
-                        sc.normalize();
-                        const caretNode = sc.firstChild || sc.appendChild(doc.createTextNode(''));
-                        const newRange = doc.createRange();
-                        newRange.setStart(caretNode, caretNode.nodeValue.length);
-                        newRange.setEnd(caretNode, caretNode.nodeValue.length);
-                        sel.removeAllRanges();
-                        sel.addRange(newRange);
-                        return true;
+                    const blockRange = doc.createRange();
+                    blockRange.selectNode(blocks[i]);
+                    if (range.compareBoundaryPoints(Range.START_TO_START, blockRange) <= 0 &&
+                        range.compareBoundaryPoints(Range.END_TO_END, blockRange) >= 0) {
+                        found.push(blocks[i]);
                     }
                 }
-                return false;
+                return found;
+            }
+
+            function isEmptyPasteBlock(el) {
+                return !!(el && /^(?:P|H[1-6])$/.test(el.nodeName) &&
+                    !normalizePasteCompareText(el.textContent) &&
+                    !el.querySelector('img, hr, input, iframe, video, svg, canvas'));
+            }
+
+            // Paste over a fully-wrapped block: put the text INSIDE the existing
+            // tag (keeping the tag name, class and all attributes) instead of
+            // letting deleteContents destroy the tag.
+            function pasteIntoSwallowedBlock(range, text, sel) {
+                const swallowed = blocksFullyInsideRange(range);
+                if (!swallowed.length) return false;
+                let target = null;
+                for (let i = 0; i < swallowed.length; i++) {
+                    if (normalizePasteCompareText(swallowed[i].textContent)) { target = swallowed[i]; break; }
+                }
+                if (!target) target = swallowed[0];
+                target.textContent = text;
+                // Other blocks fully inside the selection were selected for
+                // replacement too — remove them so the paste doesn't duplicate.
+                for (let i = 0; i < swallowed.length; i++) {
+                    if (swallowed[i] !== target && swallowed[i].parentNode) {
+                        swallowed[i].parentNode.removeChild(swallowed[i]);
+                    }
+                }
+                const caretNode = target.firstChild;
+                const newRange = doc.createRange();
+                newRange.setStart(caretNode, caretNode.nodeValue.length);
+                newRange.setEnd(caretNode, caretNode.nodeValue.length);
+                sel.removeAllRanges();
+                sel.addRange(newRange);
+                return true;
             }
 
             function insertPlainTextParagraphsAtSelection(range, paragraphs) {
@@ -6474,9 +6429,14 @@ if (isset($_GET['action'])) {
                     sel.removeAllRanges();
                     sel.addRange(newRange);
                 }
-                else if (replaceWholeBlockTextAtSelection(range, text, sel)) {
-                    // Whole <p>/<h1>/heading selected at element level:
-                    // replace inside the existing tag so classes/attributes stay intact.
+                // Case 1.5: the selection wraps one or more whole block tags
+                // (<p>/<h1>-<h6>) — double/triple-click often anchors the
+                // selection in the whitespace around the tag. Replace the text
+                // INSIDE the tag so its name/class/attributes survive; letting
+                // this fall through to deleteContents would destroy the tag and
+                // leave "<p class=...></p>orphan text" in the code.
+                else if (pasteIntoSwallowedBlock(range, text, sel)) {
+                    // handled — nothing else to do
                 }
                 // Case 2: Element-level or cross-node selection — use deleteContents
                 // + insertNode. deleteContents preserves parent structure (just empties
@@ -6498,25 +6458,34 @@ if (isset($_GET['action'])) {
                     range.deleteContents();
                     const textNode = doc.createTextNode(text);
                     range.insertNode(textNode);
-                    if (repairOrphanTextNearEmptyBlocks(doc, sel)) {
-                        clearTimeout(designInputDebounceTimer);
-                        designInputDebounceTimer = setTimeout(syncFromDesign, 80);
-                        return;
-                    }
                     if (textNode.parentNode) textNode.parentNode.normalize();
 
-                    // If text ended up outside a <p> (direct child of body / structural div),
-                    // wrap it in <p class="text_obisnuit"> and remove empty <p> remnants.
+                    // If text ended up outside a <p>/<h*> block (direct child of body
+                    // or of a structural container div), it would serialize as orphan
+                    // text between tags. Refill the adjacent block that deleteContents
+                    // just emptied (keeps its tag + class), or wrap the text in
+                    // <p class="text_obisnuit"> and remove empty <p> remnants.
                     const parent = textNode.parentNode;
-                    const isOrphan = parent && (
+                    const isOrphan = parent && !closestPasteBlock(textNode) && (
                         parent === doc.body ||
-                        (parent.nodeName === 'DIV' && parent.getAttribute('align'))
+                        /^(?:DIV|SECTION|ARTICLE|MAIN|ASIDE|HEADER|FOOTER)$/.test(parent.nodeName)
                     );
                     if (isOrphan) {
-                        const wrapper = doc.createElement('p');
-                        wrapper.className = 'text_obisnuit';
-                        parent.insertBefore(wrapper, textNode);
-                        wrapper.appendChild(textNode);
+                        let wrapper = null;
+                        if (isEmptyPasteBlock(textNode.previousElementSibling)) {
+                            wrapper = textNode.previousElementSibling;
+                        } else if (isEmptyPasteBlock(textNode.nextElementSibling)) {
+                            wrapper = textNode.nextElementSibling;
+                        }
+                        if (wrapper) {
+                            wrapper.textContent = '';
+                            wrapper.appendChild(textNode);
+                        } else {
+                            wrapper = doc.createElement('p');
+                            wrapper.className = 'text_obisnuit';
+                            parent.insertBefore(wrapper, textNode);
+                            wrapper.appendChild(textNode);
+                        }
                         // Remove empty <p> siblings left by deleteContents
                         for (let i = touchedPs.length - 1; i >= 0; i--) {
                             const p = touchedPs[i];
@@ -7843,7 +7812,7 @@ if (isset($_GET['action'])) {
             const quickClassBtn = document.getElementById('btnClassObisnuit2');
             if (quickClassBtn) {
                 quickClassBtn.dataset.className = 'text_obisnuit2';
-                const hasClass = (' ' + (el.className || '') + ' ').indexOf(' text_obisnuit2 ') !== -1;
+                const hasClass = designSelectionHasCssClass(el, 'text_obisnuit2');
                 quickClassBtn.classList.toggle('active', hasClass);
             }
             // Link / Target
@@ -8225,32 +8194,62 @@ if (isset($_GET['action'])) {
                 // Case 1: selection covers the entire content of a block element
                 // → change the block's class directly instead of wrapping in a span
                 const BLOCK_TAGS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th', 'blockquote', 'pre', 'article', 'section', 'figure', 'header', 'footer', 'main', 'nav']);
+                const BLOCK_SEL = 'p,div,h1,h2,h3,h4,h5,h6,li,td,th,blockquote,pre,article,section,figure,header,footer,main,nav';
+
+                // Determine the block element whose full content is selected.
+                // Two situations produce a "whole line" selection:
+                //   (a) commonAncestorContainer IS the block (selection stays inside it)
+                //   (b) the range spans the entire block from its parent level — e.g. a
+                //       double/triple-click on a paragraph, where commonAncestorContainer
+                //       becomes the parent (body). Without handling (b), the block would be
+                //       wrapped in a <span>, producing invalid <span><p>…</p></span>.
+                let targetBlock = null;
                 if (BLOCK_TAGS.has((ancestor.tagName || '').toLowerCase()) &&
                     selectedText.trim() === ancestor.textContent.trim()) {
-                    if (value && ancestor.classList.contains(value)) {
+                    targetBlock = ancestor;
+                } else {
+                    // Resolve the block sitting at the start of the selection.
+                    let startNode = range.startContainer;
+                    if (startNode.nodeType === 1 && startNode.childNodes[range.startOffset]) {
+                        startNode = startNode.childNodes[range.startOffset];
+                    }
+                    if (startNode && startNode.nodeType === 3) startNode = startNode.parentElement;
+                    let candidate = null;
+                    if (startNode && startNode.nodeType === 1) {
+                        candidate = (startNode.matches && startNode.matches(BLOCK_SEL))
+                            ? startNode
+                            : (startNode.closest ? startNode.closest(BLOCK_SEL) : null);
+                    }
+                    if (candidate && selectedText.trim() === candidate.textContent.trim()) {
+                        targetBlock = candidate;
+                    }
+                }
+
+                if (targetBlock) {
+                    if (value && targetBlock.classList.contains(value)) {
                         // Toggle off: restaurează clasa originală salvată
-                        const origClass = ancestor.getAttribute('data-orig-class');
-                        ancestor.removeAttribute('data-orig-class');
+                        const origClass = targetBlock.getAttribute('data-orig-class');
+                        targetBlock.removeAttribute('data-orig-class');
                         // Default to text_obisnuit if no original class was saved
-                        ancestor.className = origClass || 'text_obisnuit';
+                        targetBlock.className = origClass || 'text_obisnuit';
                     } else if (value) {
                         // Salvează clasa curentă înainte de a aplica text_obisnuit2
-                        if (!ancestor.hasAttribute('data-orig-class')) {
-                            ancestor.setAttribute('data-orig-class', ancestor.className || '');
+                        if (!targetBlock.hasAttribute('data-orig-class')) {
+                            targetBlock.setAttribute('data-orig-class', targetBlock.className || '');
                         }
-                        ancestor.className = value;
+                        targetBlock.className = value;
                         // Unwrap any inner <span> elements that have the same class
                         // (e.g. <span class="text_obisnuit2"> inside <p class="text_obisnuit2">)
-                        const redundantSpans = ancestor.querySelectorAll('span.' + value);
+                        const redundantSpans = targetBlock.querySelectorAll('span.' + value);
                         redundantSpans.forEach(span => {
                             const parent = span.parentNode;
                             while (span.firstChild) parent.insertBefore(span.firstChild, span);
                             parent.removeChild(span);
                         });
-                        ancestor.normalize();
+                        targetBlock.normalize();
                     } else {
-                        ancestor.removeAttribute('class');
-                        ancestor.removeAttribute('data-orig-class');
+                        targetBlock.removeAttribute('class');
+                        targetBlock.removeAttribute('data-orig-class');
                     }
                     syncFromDesign();
                     lastDesignSnapshot = getDesignBodyHtml();
@@ -8307,7 +8306,40 @@ if (isset($_GET['action'])) {
                         }
                     }
                 } else if (value) {
-                    // Case 3: partial selection with no existing span → wrap only selected words
+                    // Case 3: no existing span. If the selection fully spans one or more
+                    // block elements, set the class on each block instead of wrapping them
+                    // in a <span> (which would create invalid markup like <span><p>…</p></span>).
+                    const spannedBlocks = [];
+                    doc.querySelectorAll(BLOCK_SEL).forEach(b => {
+                        const bRange = doc.createRange();
+                        bRange.selectNodeContents(b);
+                        if (range.compareBoundaryPoints(Range.START_TO_START, bRange) <= 0 &&
+                            range.compareBoundaryPoints(Range.END_TO_END, bRange) >= 0) {
+                            spannedBlocks.push(b);
+                        }
+                    });
+                    // Ignore ancestor containers that merely wrap the real target blocks
+                    const leafBlocks = spannedBlocks.filter(b =>
+                        !spannedBlocks.some(other => other !== b && b.contains(other)));
+                    if (leafBlocks.length) {
+                        leafBlocks.forEach(b => {
+                            if (!b.hasAttribute('data-orig-class')) {
+                                b.setAttribute('data-orig-class', b.className || '');
+                            }
+                            b.className = value;
+                            b.querySelectorAll('span.' + value).forEach(span => {
+                                const parent = span.parentNode;
+                                while (span.firstChild) parent.insertBefore(span.firstChild, span);
+                                parent.removeChild(span);
+                            });
+                            b.normalize();
+                        });
+                        syncFromDesign();
+                        lastDesignSnapshot = getDesignBodyHtml();
+                        applyCodeToDesignPanel();
+                        return;
+                    }
+                    // Partial selection within a single block → wrap only the selected words.
                     // Use Range API (not execCommand) to avoid style="" side-effects
                     try {
                         const newSpan = doc.createElement('span');
@@ -8804,7 +8836,7 @@ if (isset($_GET['action'])) {
                     applyClassProperty(targetClass);
                     const el = getDesignSelection();
                     if (el) {
-                        const hasClass = (' ' + (el.className || '') + ' ').indexOf(' ' + targetClass + ' ') !== -1;
+                        const hasClass = designSelectionHasCssClass(el, targetClass);
                         quickClassBtn.classList.toggle('active', hasClass);
                     }
                 });
