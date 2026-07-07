@@ -196,6 +196,52 @@ function apply_sasa_teaser_to_meta_description_php($html)
     return $out;
 }
 
+/** Păstrează la sync/save blocul <!-- JavaScript --> + <script> din body (preview-ul le elimină). */
+function merge_body_with_protected_script_tail_php($origInner, $designInner)
+{
+    if (preg_match('/<script\b/i', $designInner)) {
+        return $designInner;
+    }
+    if (!preg_match('/<script\b/i', $origInner)) {
+        return $designInner;
+    }
+    if (preg_match('/<!--\s*JavaScript\s*-->/i', $origInner, $m, PREG_OFFSET_CAPTURE)) {
+        $tail = substr($origInner, $m[0][1]);
+        $core = $designInner;
+        if (preg_match('/<!--\s*JavaScript\s*-->/i', $core, $dm, PREG_OFFSET_CAPTURE)) {
+            $core = substr($core, 0, $dm[0][1]);
+        }
+        return rtrim($core) . "\n    " . rtrim($tail) . "\n";
+    }
+    if (preg_match_all('/<script\b[^>]*>[\s\S]*?<\/script>/i', $origInner, $scripts) && !empty($scripts[0])) {
+        $core = preg_replace('/(?:\s*<!--[\s\S]*?-->[\s]*)+$/', '', $designInner);
+        return rtrim($core) . "\n    " . implode("\n    ", $scripts[0]) . "\n";
+    }
+    return $designInner;
+}
+
+function restore_protected_body_scripts_php($originalHtml, $newHtml)
+{
+    if (!preg_match('/<body([^>]*)>[\s\S]*<\/body>/i', $originalHtml, $om)) {
+        return $newHtml;
+    }
+    if (!preg_match('/<body([^>]*)>([\s\S]*)<\/body>/i', $newHtml, $nm)) {
+        return $newHtml;
+    }
+    $origInner = preg_replace('/^<body[^>]*>/i', '', $om[0]);
+    $origInner = preg_replace('/<\/body>$/i', '', $origInner);
+    $mergedInner = merge_body_with_protected_script_tail_php($origInner, $nm[2]);
+    if ($mergedInner === $nm[2]) {
+        return $newHtml;
+    }
+    return preg_replace(
+        '/<body[^>]*>[\s\S]*<\/body>/i',
+        '<body' . $nm[1] . '>' . $mergedInner . '</body>',
+        $newHtml,
+        1
+    );
+}
+
 define('ARTICLE_PAGE_TITLE_SUFFIX', ' | Neculai Fantanaru');
 
 /**
@@ -691,11 +737,15 @@ if (isset($_GET['action'])) {
         $content = isset($_POST['content']) ? $_POST['content'] : '';
         $extSave = strtolower(pathinfo($full, PATHINFO_EXTENSION));
         $metaSynced = false;
+        $existingOnDisk = file_exists($full) ? read_file_as_utf8($full) : false;
         if (($extSave === 'html' || $extSave === 'htm') && $content !== '') {
             $beforeMeta = $content;
             $content = align_saved_html_charset_declaration_utf8($content);
             $content = apply_sasa_teaser_to_meta_description_php($content);
             $content = apply_h1_to_page_titles_php($content);
+            if ($existingOnDisk !== false) {
+                $content = restore_protected_body_scripts_php($existingOnDisk, $content);
+            }
             $metaSynced = ($content !== $beforeMeta);
         }
         file_put_contents($full, $content);
@@ -2330,7 +2380,8 @@ if (isset($_GET['action'])) {
                 designCleanCode: null, // baseline editor text when design snapshot was taken (cross-tab undo / dirty)
                 categorySyncDescriptionBaseline: getCategorySyncDescriptionFromArticleHtml(_oc),
                 linkedCategoryPath: null,
-                linkedArticleKey: null
+                linkedArticleKey: null,
+                protectedBodyScriptTail: opts.protectedBodyScriptTail || extractProtectedBodyScriptTail(_oc) || null
             };
         }
 
@@ -6126,6 +6177,18 @@ if (isset($_GET['action'])) {
                 if (isCurrentFileHtml() && typeof applyH1ToPageTitles === 'function') {
                     contentToSave = applyH1ToPageTitles(contentToSave);
                 }
+                var protectedTail = null;
+                if (activeTabId) {
+                    for (var _sti = 0; _sti < tabs.length; _sti++) {
+                        if (tabs[_sti].id === activeTabId) {
+                            protectedTail = tabs[_sti].protectedBodyScriptTail;
+                            break;
+                        }
+                    }
+                }
+                if (protectedTail && typeof applyProtectedScriptsToFullHtml === 'function') {
+                    contentToSave = applyProtectedScriptsToFullHtml(contentToSave, protectedTail);
+                }
                 const body = new URLSearchParams();
                 body.append('file', currentFile);
                 body.append('content', contentToSave);
@@ -6161,6 +6224,8 @@ if (isset($_GET['action'])) {
                         tab.originalContent = contentToSave;
                         tab.originalContentNorm = normalizeHtmlForCompare(tab.originalContent);
                         tab.editorContent = tab.originalContent;
+                        var _newTail = extractProtectedBodyScriptTail(contentToSave);
+                        if (_newTail) tab.protectedBodyScriptTail = _newTail;
                         lastDesignSnapshot = getDesignBodyHtml();
                         tab.lastDesignSnapshot = lastDesignSnapshot;
                         var hasDesignHistoryAtSave = (designUndoStack && designUndoStack.length > 0) ||
@@ -6413,6 +6478,64 @@ if (isset($_GET['action'])) {
             doc.head.appendChild(st);
         }
 
+        /** Extrage <!-- JavaScript --> + toate scripturile din body (referință imutabilă per tab). */
+        function extractProtectedBodyScriptTail(html) {
+            const bodyMatch = /<body[^>]*>([\s\S]*)<\/body>/i.exec(String(html || ''));
+            if (!bodyMatch) return null;
+            const inner = bodyMatch[1];
+            const jsMarker = /<!--\s*JavaScript\s*-->/i;
+            const idx = inner.search(jsMarker);
+            if (idx !== -1) {
+                const tail = inner.slice(idx).trimEnd();
+                return /<script\b/i.test(tail) ? tail : null;
+            }
+            const blocks = inner.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi);
+            if (!blocks || !blocks.length) return null;
+            return blocks.join('\n    ');
+        }
+
+        function applyProtectedScriptsToFullHtml(html, protectedTail) {
+            if (!protectedTail) return html;
+            const bodyRe = /<body([^>]*)>[\s\S]*<\/body>/i;
+            const bodyMatch = bodyRe.exec(String(html || ''));
+            if (!bodyMatch) return html;
+            const bodyInner = bodyMatch[0].replace(/^<body[^>]*>/i, '').replace(/<\/body>$/i, '');
+            if (/<script\b/i.test(bodyInner)) return html;
+            const mergedInner = restoreProtectedBodyScripts(bodyInner, bodyInner, protectedTail);
+            if (mergedInner === bodyInner) return html;
+            return html.slice(0, bodyMatch.index) + '<body' + bodyMatch[1] + '>' + mergedInner + '</body>' +
+                html.slice(bodyMatch.index + bodyMatch[0].length);
+        }
+
+        /** Păstrează la sync blocul <!-- JavaScript --> + scripturi din body (preview-ul le elimină). */
+        function restoreProtectedBodyScripts(originalBodyInner, designBodyInner, protectedTail) {
+            if (!designBodyInner) return designBodyInner;
+            if (/<script\b/i.test(designBodyInner)) return designBodyInner;
+
+            let tail = protectedTail || null;
+            if (!tail && originalBodyInner && /<script\b/i.test(originalBodyInner)) {
+                const jsMarker = /<!--\s*JavaScript\s*-->/i;
+                const tailStart = originalBodyInner.search(jsMarker);
+                if (tailStart !== -1) {
+                    tail = originalBodyInner.slice(tailStart).trimEnd();
+                } else {
+                    const blocks = originalBodyInner.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
+                    if (blocks.length) tail = blocks.join('\n    ');
+                }
+            }
+            if (!tail) return designBodyInner;
+
+            let core = designBodyInner;
+            const jsMarker = /<!--\s*JavaScript\s*-->/i;
+            const designJsIdx = core.search(jsMarker);
+            if (designJsIdx !== -1) {
+                core = core.slice(0, designJsIdx).trimEnd();
+            } else {
+                core = core.replace(/(?:\s*<!--[\s\S]*?-->[\s]*)+$/i, '').trimEnd();
+            }
+            return core + '\n    ' + tail + '\n';
+        }
+
         function syncFromDesign(force) {
             if (isSyncFromCode && !force) return;
             const iframe = document.getElementById('preview');
@@ -6467,6 +6590,16 @@ if (isset($_GET['action'])) {
             // Preserve original tag names (i vs em, b vs strong) from the code editor
             // so that browser normalisation does not silently rename them.
             var oldBodyInner = bodyMatch[0].replace(/^<body[^>]*>/i, '').replace(/<\/body>$/i, '');
+            var protectedTail = null;
+            if (activeTabId) {
+                for (var _ti = 0; _ti < tabs.length; _ti++) {
+                    if (tabs[_ti].id === activeTabId) {
+                        protectedTail = tabs[_ti].protectedBodyScriptTail;
+                        break;
+                    }
+                }
+            }
+            rawInner = restoreProtectedBodyScripts(oldBodyInner, rawInner, protectedTail);
             rawInner = preserveEquivTags(oldBodyInner, rawInner);
             const newBody = '<body' + bodyMatch[1] + '>' + rawInner + '</body>';
             // Only update code if the body actually changed (avoids false dirty on select/copy)
