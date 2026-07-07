@@ -98,6 +98,215 @@ function align_saved_html_charset_declaration_utf8($html)
     return ($out2 !== null && $cnt2 > 0) ? $out2 : $html;
 }
 
+/** Text simplu din interiorul unui tag (fără alte tag-uri). */
+function plain_text_from_html_inner($inner)
+{
+    $x = preg_replace('/<br\s*\/?>/i', ' ', (string) $inner);
+    $x = strip_tags($x);
+    $x = html_entity_decode($x, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    return trim(preg_replace('/\s+/u', ' ', $x));
+}
+
+/**
+ * Primul <p class="text_obisnuit2"> imediat după <!-- SASA-1 --> (cu sau fără <em>).
+ */
+function extract_article_sasa_teaser_plain($html)
+{
+    $norm = str_replace(["\r\n", "\r"], "\n", (string) $html);
+    if (!preg_match('/<!--\s*SASA-1\s*-->/i', $norm, $m, PREG_OFFSET_CAPTURE)) {
+        return null;
+    }
+    $slice = substr($norm, $m[0][1] + strlen($m[0][0]));
+    if (!preg_match(
+        '/^\s*(?:<!--[\s\S]*?-->\s*)*<p\b[^>]*\bclass\s*=\s*["\'][^"\']*\btext_obisnuit2\b[^"\']*["\'][^>]*>([\s\S]*?)<\/p>/i',
+        $slice,
+        $pm
+    )) {
+        return null;
+    }
+    $text = plain_text_from_html_inner($pm[1]);
+    return $text !== '' ? $text : null;
+}
+
+function escape_meta_description_attr_value_php($s)
+{
+    $s = str_replace(['&', '"', '<', '>'], ['&amp;', '&quot;', '&lt;', '&gt;'], (string) $s);
+    return trim(preg_replace('/\s+/u', ' ', str_replace(["\r\n", "\r", "\n"], ' ', $s)));
+}
+
+function escape_json_description_value_php($s)
+{
+    $s = trim(preg_replace('/\s+/u', ' ', str_replace(["\r\n", "\r", "\n"], ' ', (string) $s)));
+    $enc = json_encode($s, JSON_UNESCAPED_UNICODE);
+    if ($enc === false || strlen($enc) < 2) {
+        return '';
+    }
+    return substr($enc, 1, -1);
+}
+
+/** La save: meta description, og:description, JSON-LD description din primul text_obisnuit2 după SASA-1. */
+function apply_sasa_teaser_to_meta_description_php($html)
+{
+    $teaser = extract_article_sasa_teaser_plain($html);
+    if ($teaser === null || $teaser === '') {
+        return $html;
+    }
+    $metaEsc = escape_meta_description_attr_value_php($teaser);
+    $jsonEsc = escape_json_description_value_php($teaser);
+    $out = (string) $html;
+
+    $metaPatterns = [
+        '/(<meta\s+name\s*=\s*["\']description["\']\s+content\s*=\s*["\'])([^"\']*)(["\'])/i',
+        '/(<meta\s+content\s*=\s*["\'])([^"\']*)(["\']\s+name\s*=\s*["\']description["\'])/i',
+    ];
+    foreach ($metaPatterns as $re) {
+        if (preg_match($re, $out)) {
+            $out = preg_replace($re, '${1}' . $metaEsc . '${3}', $out, 1);
+            break;
+        }
+    }
+
+    $ogPatterns = [
+        '/(<meta\s+property\s*=\s*["\']og:description["\']\s+content\s*=\s*["\'])([^"\']*)(["\'])/i',
+        '/(<meta\s+content\s*=\s*["\'])([^"\']*)(["\']\s+property\s*=\s*["\']og:description["\'])/i',
+    ];
+    foreach ($ogPatterns as $re) {
+        if (preg_match($re, $out)) {
+            $out = preg_replace($re, '${1}' . $metaEsc . '${3}', $out, 1);
+            break;
+        }
+    }
+
+    $out = preg_replace_callback(
+        '/(<script[^>]*\btype\s*=\s*["\']application\/ld\+json["\'][^>]*>)([\s\S]*?)(<\/script>)/i',
+        function ($m) use ($jsonEsc) {
+            $newJson = preg_replace(
+                '/("description"\s*:\s*")((?:\\\\.|[^"\\\\])*)(")/i',
+                '${1}' . $jsonEsc . '${3}',
+                $m[2]
+            );
+            if ($newJson === $m[2]) {
+                return $m[0];
+            }
+            return $m[1] . $newJson . $m[3];
+        },
+        $out
+    );
+
+    return $out;
+}
+
+define('ARTICLE_PAGE_TITLE_SUFFIX', ' | Neculai Fantanaru');
+
+/**
+ * Titlul articolului din <h1 class="custom-h1 article-title"> sau <h1 class="den_articol">.
+ */
+function extract_article_h1_title_plain_php($html)
+{
+    $norm = str_replace(["\r\n", "\r"], "\n", (string) $html);
+    if (preg_match(
+        '/<h1\b(?=[^>]*\bcustom-h1\b)(?=[^>]*\barticle-title\b)[^>]*>([\s\S]*?)<\/h1>/i',
+        $norm,
+        $m
+    )) {
+        $text = plain_text_from_html_inner($m[1]);
+        if ($text !== '') {
+            return $text;
+        }
+    }
+    if (preg_match(
+        '/<h1\b[^>]*\bclass\s*=\s*["\'][^"\']*\bden_articol\b[^"\']*["\'][^>]*>([\s\S]*?)<\/h1>/i',
+        $norm,
+        $m2
+    )) {
+        $text = plain_text_from_html_inner($m2[1]);
+        if ($text !== '') {
+            return $text;
+        }
+    }
+    return null;
+}
+
+function build_article_page_title_from_h1_php($h1Plain)
+{
+    $core = trim(preg_replace('/\s+/u', ' ', (string) $h1Plain));
+    if ($core === '') {
+        return '';
+    }
+    return $core . ARTICLE_PAGE_TITLE_SUFFIX;
+}
+
+/** La save: title, og:title, abstract, Subject, JSON-LD headline/name din H1 articol. */
+function apply_h1_to_page_titles_php($html)
+{
+    $h1Plain = extract_article_h1_title_plain_php($html);
+    if ($h1Plain === null || $h1Plain === '') {
+        return $html;
+    }
+    $titleFull = build_article_page_title_from_h1_php($h1Plain);
+    if ($titleFull === '') {
+        return $html;
+    }
+    $metaEsc = escape_meta_description_attr_value_php($titleFull);
+    $jsonEsc = escape_json_description_value_php($titleFull);
+    $out = (string) $html;
+
+    $out = preg_replace('/(<title[^>]*>)([\s\S]*?)(<\/title>)/i', '${1}' . $metaEsc . '${3}', $out, 1);
+
+    $ogTitlePatterns = [
+        '/(<meta\s+property\s*=\s*["\']og:title["\']\s+content\s*=\s*["\'])([^"\']*)(["\'])/i',
+        '/(<meta\s+content\s*=\s*["\'])([^"\']*)(["\']\s+property\s*=\s*["\']og:title["\'])/i',
+    ];
+    foreach ($ogTitlePatterns as $re) {
+        if (preg_match($re, $out)) {
+            $out = preg_replace($re, '${1}' . $metaEsc . '${3}', $out, 1);
+            break;
+        }
+    }
+
+    $namedMetaPatterns = [
+        '/(<meta\s+name\s*=\s*["\']abstract["\']\s+content\s*=\s*["\'])([^"\']*)(["\'])/i',
+        '/(<meta\s+content\s*=\s*["\'])([^"\']*)(["\']\s+name\s*=\s*["\']abstract["\'])/i',
+        '/(<meta\s+name\s*=\s*["\']Subject["\']\s+content\s*=\s*["\'])([^"\']*)(["\'])/i',
+        '/(<meta\s+content\s*=\s*["\'])([^"\']*)(["\']\s+name\s*=\s*["\']Subject["\'])/i',
+    ];
+    foreach ($namedMetaPatterns as $re) {
+        if (preg_match($re, $out)) {
+            $out = preg_replace($re, '${1}' . $metaEsc . '${3}', $out, 1);
+        }
+    }
+
+    $suffixRe = preg_quote(ARTICLE_PAGE_TITLE_SUFFIX, '/');
+    $out = preg_replace_callback(
+        '/(<script[^>]*\btype\s*=\s*["\']application\/ld\+json["\'][^>]*>)([\s\S]*?)(<\/script>)/i',
+        function ($m) use ($jsonEsc, $suffixRe) {
+            $jsonBody = $m[2];
+            $newJson = preg_replace(
+                '/("headline"\s*:\s*")((?:\\\\.|[^"\\\\])*)(")/i',
+                '${1}' . $jsonEsc . '${3}',
+                $jsonBody
+            );
+            $newJson = preg_replace_callback(
+                '/("name"\s*:\s*")((?:\\\\.|[^"\\\\])*)(")/i',
+                function ($nm) use ($jsonEsc, $suffixRe) {
+                    if (!preg_match('/' . $suffixRe . '\s*$/i', $nm[2])) {
+                        return $nm[0];
+                    }
+                    return $nm[1] . $jsonEsc . $nm[3];
+                },
+                $newJson
+            );
+            if ($newJson === $jsonBody) {
+                return $m[0];
+            }
+            return $m[1] . $newJson . $m[3];
+        },
+        $out
+    );
+
+    return $out;
+}
+
 // --- Asset proxy: serve any file from disk (CSS, JS, images, etc.) ---
 $pathInfo = isset($_SERVER['PATH_INFO']) ? $_SERVER['PATH_INFO'] : '';
 if (strpos($pathInfo, '/asset/') === 0) {
@@ -481,11 +690,16 @@ if (isset($_GET['action'])) {
         }
         $content = isset($_POST['content']) ? $_POST['content'] : '';
         $extSave = strtolower(pathinfo($full, PATHINFO_EXTENSION));
+        $metaSynced = false;
         if (($extSave === 'html' || $extSave === 'htm') && $content !== '') {
+            $beforeMeta = $content;
             $content = align_saved_html_charset_declaration_utf8($content);
+            $content = apply_sasa_teaser_to_meta_description_php($content);
+            $content = apply_h1_to_page_titles_php($content);
+            $metaSynced = ($content !== $beforeMeta);
         }
         file_put_contents($full, $content);
-        echo json_encode(['ok' => true, 'file' => $full]);
+        echo json_encode(['ok' => true, 'file' => $full, 'metaSynced' => $metaSynced]);
         exit;
     }
 
@@ -1919,15 +2133,16 @@ if (isset($_GET['action'])) {
         }
 
         /**
-         * Textul afișat în listă (categorie) corespunde, în articole, de obicei paragrafului
-         * <p class="text_obisnuit2"><em>…</em></p> de după <!-- SASA-1 --> (nu neapărat meta).
+         * Textul pentru meta/og/JSON-LD: primul <p class="text_obisnuit2"> imediat după <!-- SASA-1 -->
+         * (cu sau fără <em> în interior).
          */
         function extractArticleSasaTeaserPlain(html) {
             const norm = String(html || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
             const sasaRe = /<!--\s*SASA-1\s*-->/i;
             const mSasa = sasaRe.exec(norm);
-            const slice = mSasa ? norm.slice(mSasa.index + mSasa[0].length) : norm;
-            const m = slice.match(/<p\b[^>]*\bclass\s*=\s*["'][^"']*\btext_obisnuit2\b[^"']*["'][^>]*>[\s\S]*?<em\b[^>]*>([\s\S]*?)<\/em>[\s\S]*?<\/p>/i);
+            if (!mSasa) return null;
+            const slice = norm.slice(mSasa.index + mSasa[0].length);
+            const m = slice.match(/^\s*(?:<!--[\s\S]*?-->\s*)*<p\b[^>]*\bclass\s*=\s*["'][^"']*\btext_obisnuit2\b[^"']*["'][^>]*>([\s\S]*?)<\/p>/i);
             if (!m) return null;
             return plainTextFromEmInnerHtml(m[1]);
         }
@@ -1963,21 +2178,127 @@ if (isset($_GET['action'])) {
                 .trim();
         }
 
-        /** Actualizează <meta name="description" content="…"> din textul din <em> după SASA-1. Fără tag → return html nemodificat. */
+        function escapeJsonDescriptionValue(s) {
+            return String(s || '')
+                .replace(/\\/g, '\\\\')
+                .replace(/"/g, '\\"')
+                .replace(/\r?\n/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        /** Actualizează meta description, og:description și "description" din JSON-LD din primul text_obisnuit2 după SASA-1. */
         function applySasaTeaserToMetaDescription(html) {
             var teaser = extractArticleSasaTeaserPlain(html);
             if (teaser == null || teaser === '') return html;
-            var esc = escapeMetaDescriptionAttrValue(teaser);
+            var metaEsc = escapeMetaDescriptionAttrValue(teaser);
+            var jsonEsc = escapeJsonDescriptionValue(teaser);
             var out = String(html);
             var re1 = /(<meta\s+name\s*=\s*["']description["']\s+content\s*=\s*["'])([^"']*)(["'])/i;
             var re2 = /(<meta\s+content\s*=\s*["'])([^"']*)(["']\s+name\s*=\s*["']description["'])/i;
             if (re1.test(out)) {
-                return out.replace(re1, function (_, a, _old, c) { return a + esc + c; });
+                out = out.replace(re1, function (_, a, _old, c) { return a + metaEsc + c; });
+            } else if (re2.test(out)) {
+                out = out.replace(re2, function (_, a, _old, c) { return a + metaEsc + c; });
             }
-            if (re2.test(out)) {
-                return out.replace(re2, function (_, a, _old, c) { return a + esc + c; });
+            var reOg1 = /(<meta\s+property\s*=\s*["']og:description["']\s+content\s*=\s*["'])([^"']*)(["'])/i;
+            var reOg2 = /(<meta\s+content\s*=\s*["'])([^"']*)(["']\s+property\s*=\s*["']og:description["'])/i;
+            if (reOg1.test(out)) {
+                out = out.replace(reOg1, function (_, a, _old, c) { return a + metaEsc + c; });
+            } else if (reOg2.test(out)) {
+                out = out.replace(reOg2, function (_, a, _old, c) { return a + metaEsc + c; });
             }
-            return html;
+            out = out.replace(
+                /(<script[^>]*\btype\s*=\s*["']application\/ld\+json["'][^>]*>)([\s\S]*?)(<\/script>)/gi,
+                function (match, open, jsonBody, close) {
+                    var newJson = jsonBody.replace(
+                        /("description"\s*:\s*")((?:\\.|[^"\\])*)(")/gi,
+                        function (_, prefix, _old, suffix) { return prefix + jsonEsc + suffix; }
+                    );
+                    return newJson === jsonBody ? match : open + newJson + close;
+                }
+            );
+            return out;
+        }
+
+        const ARTICLE_PAGE_TITLE_SUFFIX = ' | Neculai Fantanaru';
+
+        /** Titlul articolului din <h1 class="custom-h1 article-title"> sau <h1 class="den_articol">. */
+        function extractArticleH1TitlePlain(html) {
+            const norm = String(html || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            let m = norm.match(/<h1\b(?=[^>]*\bcustom-h1\b)(?=[^>]*\barticle-title\b)[^>]*>([\s\S]*?)<\/h1>/i);
+            if (m) {
+                const text = plainTextFromEmInnerHtml(m[1]);
+                if (text) return text;
+            }
+            m = norm.match(/<h1\b[^>]*\bclass\s*=\s*["'][^"']*\bden_articol\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i);
+            if (m) {
+                const text = plainTextFromEmInnerHtml(m[1]);
+                if (text) return text;
+            }
+            return null;
+        }
+
+        function buildArticlePageTitleFromH1(h1Plain) {
+            const core = String(h1Plain || '').replace(/\s+/g, ' ').trim();
+            if (!core) return '';
+            return core + ARTICLE_PAGE_TITLE_SUFFIX;
+        }
+
+        /** La save: title, og:title, abstract, Subject, JSON-LD headline/name din H1 articol. */
+        function applyH1ToPageTitles(html) {
+            const h1Plain = extractArticleH1TitlePlain(html);
+            if (h1Plain == null || h1Plain === '') return html;
+            const titleFull = buildArticlePageTitleFromH1(h1Plain);
+            if (!titleFull) return html;
+            const metaEsc = escapeMetaDescriptionAttrValue(titleFull);
+            const jsonEsc = escapeJsonDescriptionValue(titleFull);
+            let out = String(html);
+
+            out = out.replace(/(<title[^>]*>)([\s\S]*?)(<\/title>)/i, function (_, a, _old, c) { return a + metaEsc + c; });
+
+            const ogTitlePatterns = [
+                /(<meta\s+property\s*=\s*["']og:title["']\s+content\s*=\s*["'])([^"']*)(["'])/i,
+                /(<meta\s+content\s*=\s*["'])([^"']*)(["']\s+property\s*=\s*["']og:title["'])/i
+            ];
+            for (let i = 0; i < ogTitlePatterns.length; i++) {
+                if (ogTitlePatterns[i].test(out)) {
+                    out = out.replace(ogTitlePatterns[i], function (_, a, _old, c) { return a + metaEsc + c; });
+                    break;
+                }
+            }
+
+            const namedMetaPatterns = [
+                /(<meta\s+name\s*=\s*["']abstract["']\s+content\s*=\s*["'])([^"']*)(["'])/i,
+                /(<meta\s+content\s*=\s*["'])([^"']*)(["']\s+name\s*=\s*["']abstract["'])/i,
+                /(<meta\s+name\s*=\s*["']Subject["']\s+content\s*=\s*["'])([^"']*)(["'])/i,
+                /(<meta\s+content\s*=\s*["'])([^"']*)(["']\s+name\s*=\s*["']Subject["'])/i
+            ];
+            for (let j = 0; j < namedMetaPatterns.length; j++) {
+                if (namedMetaPatterns[j].test(out)) {
+                    out = out.replace(namedMetaPatterns[j], function (_, a, _old, c) { return a + metaEsc + c; });
+                }
+            }
+
+            const suffixRe = /\|\s*Neculai Fantanaru\s*$/i;
+            out = out.replace(
+                /(<script[^>]*\btype\s*=\s*["']application\/ld\+json["'][^>]*>)([\s\S]*?)(<\/script>)/gi,
+                function (match, open, jsonBody, close) {
+                    let newJson = jsonBody.replace(
+                        /("headline"\s*:\s*")((?:\\.|[^"\\])*)(")/gi,
+                        function (_, prefix, _old, suffix) { return prefix + jsonEsc + suffix; }
+                    );
+                    newJson = newJson.replace(
+                        /("name"\s*:\s*")((?:\\.|[^"\\])*)(")/gi,
+                        function (full, prefix, oldVal, suffix) {
+                            if (!suffixRe.test(oldVal)) return full;
+                            return prefix + jsonEsc + suffix;
+                        }
+                    );
+                    return newJson === jsonBody ? match : open + newJson + close;
+                }
+            );
+            return out;
         }
 
         function createTabState(opts) {
@@ -5799,9 +6120,11 @@ if (isset($_GET['action'])) {
             try {
                 var rawContent = editor.getValue();
                 var contentToSave = rawContent;
-                if (isCurrentFileHtml() && typeof isArticlePageForSasaMetaSync === 'function' &&
-                    isArticlePageForSasaMetaSync(rawContent) && typeof applySasaTeaserToMetaDescription === 'function') {
+                if (isCurrentFileHtml() && typeof applySasaTeaserToMetaDescription === 'function') {
                     contentToSave = applySasaTeaserToMetaDescription(rawContent);
+                }
+                if (isCurrentFileHtml() && typeof applyH1ToPageTitles === 'function') {
+                    contentToSave = applyH1ToPageTitles(contentToSave);
                 }
                 const body = new URLSearchParams();
                 body.append('file', currentFile);
@@ -5809,10 +6132,24 @@ if (isset($_GET['action'])) {
                 const res = await fetch('?action=save', { method: 'POST', body });
                 const data = await res.json();
                 if (!data.ok) { toast('Eroare la salvare: ' + data.error); return; }
+                // Dacă doar serverul a sincronizat meta (client vechi / cache), reîncarcă fișierul salvat
+                if (data.metaSynced && contentToSave === rawContent && data.file) {
+                    try {
+                        const resReload = await fetch('?action=load&file=' + encodeURIComponent(data.file));
+                        const reloadData = await resReload.json();
+                        if (reloadData.ok && reloadData.content) {
+                            contentToSave = reloadData.content;
+                        }
+                    } catch (eReload) { /* păstrăm contentToSave */ }
+                }
                 if (contentToSave !== rawContent) {
                     isSyncFromDesign = true;
                     editor.setValue(contentToSave);
                     isSyncFromDesign = false;
+                    if (typeof applyCodeToDesignPanel === 'function') applyCodeToDesignPanel();
+                }
+                if (data.metaSynced || contentToSave !== rawContent) {
+                    toast('Meta description și titluri pagină actualizate din articol (SASA-1 / H1).');
                 }
                 isDirty = false;
                 if (activeTabId) {
