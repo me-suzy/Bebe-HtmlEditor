@@ -139,6 +139,48 @@ function normalize_full_text_obisnuit2_span_paragraphs_php($html)
 }
 
 /** Text simplu din interiorul unui tag (fără alte tag-uri). */
+function normalize_text_paragraph_inline_formatting_php($html)
+{
+    $html = preg_replace_callback(
+        '/(<p\b[^>]*\bclass\s*=\s*["\'][^"\']*\btext_obisnuit2?\b[^"\']*["\'][^>]*>)([\s\S]*?)(<\/p>)/i',
+        function ($m) {
+            $depths = [];
+            $inner = preg_replace('/<i\s*>/i', '<em>', $m[2]);
+            $inner = preg_replace('/<\/i>/i', '</em>', $inner);
+            $inner = preg_replace_callback(
+                '/<\/?(em|strong|u)\b[^>]*>/i',
+                function ($tag) use (&$depths) {
+                    $name = strtolower($tag[1]);
+                    if (!isset($depths[$name])) $depths[$name] = 0;
+                    if (preg_match('/^<\s*' . preg_quote($name, '/') . '\b/i', $tag[0])) {
+                        $depths[$name]++;
+                        return $tag[0];
+                    }
+                    if ($depths[$name] > 0) {
+                        $depths[$name]--;
+                        return $tag[0];
+                    }
+                    return '';
+                },
+                $inner
+            );
+            do {
+                $before = $inner;
+                $inner = preg_replace('/<(em|strong|u)\b[^>]*>\s*<\/\1>/i', '', $inner);
+                $inner = preg_replace('/<em>\s*<em>/i', '<em>', $inner);
+                $inner = preg_replace('/<\/em>\s*<\/em>/i', '</em>', $inner);
+            } while ($inner !== $before);
+            return $m[1] . $inner . $m[3];
+        },
+        (string) $html
+    );
+    return preg_replace(
+        '/^[\t ]*<p\b[^>]*\bclass\s*=\s*["\'][^"\']*\btext_obisnuit2?\b[^"\']*["\'][^>]*>\s*(?:<(?:em|i|strong|b|u)\b[^>]*>\s*<\/(?:em|i|strong|b|u)>\s*)+<\/p>\s*\r?\n?/mi',
+        '',
+        $html
+    );
+}
+
 function plain_text_from_html_inner($inner)
 {
     $x = preg_replace('/<br\s*\/?>/i', ' ', (string) $inner);
@@ -781,6 +823,7 @@ if (isset($_GET['action'])) {
         if (($extSave === 'html' || $extSave === 'htm') && $content !== '') {
             $beforeMeta = $content;
             $content = remove_orphan_closing_spans_from_paragraphs_php($content);
+            $content = normalize_text_paragraph_inline_formatting_php($content);
             $content = align_saved_html_charset_declaration_utf8($content);
             $content = apply_sasa_teaser_to_meta_description_php($content);
             $content = apply_h1_to_page_titles_php($content);
@@ -2048,6 +2091,8 @@ if (isset($_GET['action'])) {
                         title="Aplică clasa text_obisnuit2 pe selecția din Design">B</button>
                     <button type="button" id="btnQuickItalic" class="btn btn-ghost"
                         title="Italic (&lt;em&gt;) pe selecția din Design (ca butonul I de jos)">I</button>
+                    <button type="button" id="btnQuickUnderline" class="btn btn-ghost"
+                        title="Underline (&lt;u&gt;) pe selectia din Design">U</button>
                 </div>
                 <div class="viewmode-tabs" style="margin-left:12px">
                     <button type="button" id="btnBrowserTab" onclick="toggleBrowserPanel()"
@@ -2143,6 +2188,7 @@ if (isset($_GET['action'])) {
                 </select>
                 <button type="button" class="btn btn-ghost prop-btn" id="propBold" title="Bold">B</button>
                 <button type="button" class="btn btn-ghost prop-btn" id="propItalic" title="Italic">I</button>
+                <button type="button" class="btn btn-ghost prop-btn" id="propUnderline" title="Underline">U</button>
                 <label>Text:</label><input type="color" id="propColor" value="#000000" title="Culoare text">
                 <label>Fundal:</label><input type="color" id="propBg" value="#ffffff" title="Culoare fundal">
             </div>
@@ -6266,6 +6312,9 @@ if (isset($_GET['action'])) {
                 if (isCurrentFileHtml() && typeof removeOrphanClosingSpansFromParagraphs === 'function') {
                     contentToSave = removeOrphanClosingSpansFromParagraphs(contentToSave);
                 }
+                if (isCurrentFileHtml() && typeof normalizeTextParagraphInlineFormatting === 'function') {
+                    contentToSave = normalizeTextParagraphInlineFormatting(contentToSave);
+                }
                 if (isCurrentFileHtml() && typeof applySasaTeaserToMetaDescription === 'function') {
                     contentToSave = applySasaTeaserToMetaDescription(contentToSave);
                 }
@@ -6368,7 +6417,7 @@ if (isset($_GET['action'])) {
         // Compares old body HTML (from code editor) with new innerHTML (from design
         // panel) and restores the original tag variant wherever the browser swapped it.
         function preserveEquivTags(oldBodyContent, newBodyContent) {
-            var EQUIV = {'i':'em','em':'i','b':'strong','strong':'b'};
+            var EQUIV = {'b':'strong','strong':'b'};
             // Extract all tags with their positions
             function extractTags(html) {
                 var result = [];
@@ -6579,6 +6628,42 @@ if (isset($_GET['action'])) {
             );
         }
 
+        function normalizeTextParagraphInlineFormatting(html) {
+            var out = String(html || '').replace(
+                /(<p\b[^>]*\bclass\s*=\s*["'][^"']*\btext_obisnuit2?\b[^"']*["'][^>]*>)([\s\S]*?)(<\/p>)/gi,
+                function (_match, pOpen, inner, pClose) {
+                    var depths = {};
+                    inner = String(inner || '').replace(/<i\s*>/gi, '<em>').replace(/<\/i>/gi, '</em>');
+                    inner = inner.replace(/<\/?(em|strong|u)\b[^>]*>/gi, function (tag, name) {
+                        name = String(name || '').toLowerCase();
+                        depths[name] = depths[name] || 0;
+                        if (new RegExp('^<\\s*' + name + '\\b', 'i').test(tag)) {
+                            depths[name]++;
+                            return tag;
+                        }
+                        if (depths[name] > 0) {
+                            depths[name]--;
+                            return tag;
+                        }
+                        return '';
+                    });
+                    var before;
+                    do {
+                        before = inner;
+                        inner = inner
+                            .replace(/<(em|strong|u)\b[^>]*>\s*<\/\1>/gi, '')
+                            .replace(/<em>\s*<em>/gi, '<em>')
+                            .replace(/<\/em>\s*<\/em>/gi, '</em>');
+                    } while (inner !== before);
+                    return pOpen + inner + pClose;
+                }
+            );
+            return out.replace(
+                /^[\t ]*<p\b[^>]*\bclass\s*=\s*["'][^"']*\btext_obisnuit2?\b[^"']*["'][^>]*>\s*(?:<(?:em|i|strong|b|u)\b[^>]*>\s*<\/(?:em|i|strong|b|u)>\s*)+<\/p>\s*\r?\n?/gmi,
+                ''
+            );
+        }
+
         function designSelectionHasCssClass(el, className) {
             if (!el || !className) return false;
             var node = el;
@@ -6702,8 +6787,10 @@ if (isset($_GET['action'])) {
             );
             rawInner = normalizeBlockWrappedInlineFormat(rawInner, 'em');
             rawInner = normalizeBlockWrappedInlineFormat(rawInner, 'strong');
+            rawInner = normalizeBlockWrappedInlineFormat(rawInner, 'u');
             rawInner = normalizeSpanWrappedParagraphClass(rawInner);
             rawInner = removeOrphanClosingSpansFromParagraphs(rawInner);
+            rawInner = normalizeTextParagraphInlineFormatting(rawInner);
             // Note: space collapsing is handled per-node in collapseSpacesInDesignDOM()
             // to avoid destroying indentation in the code editor.
             // Ensure line breaks between block-level elements (Design outputs them on one line)
@@ -6774,7 +6861,12 @@ if (isset($_GET['action'])) {
             doc.body.contentEditable = 'true';
             ensureDesignWhitespaceEditingStyle(doc);
             // Track that design panel was last focused (for Find scope in split mode)
-            doc.addEventListener('mousedown', () => { _frDesignWasLastFocused = true; });
+            doc.addEventListener('mousedown', () => {
+                _frDesignWasLastFocused = true;
+                // A click inside Design starts a genuinely new selection. Toolbar
+                // clicks happen in the parent document and must keep the last range.
+                lastDesignSelectionRange = null;
+            });
             // Block text drag-and-drop in design panel (prevents accidental moves)
             doc.addEventListener('dragstart', function (e) { e.preventDefault(); });
             doc.addEventListener('drop', function (e) { e.preventDefault(); });
@@ -7958,10 +8050,7 @@ if (isset($_GET['action'])) {
                 const sel = win && win.getSelection ? win.getSelection() : null;
                 if (!sel || sel.rangeCount === 0) return;
                 const range = sel.getRangeAt(0);
-                if (!range || range.collapsed) {
-                    lastDesignSelectionRange = null;
-                    return;
-                }
+                if (!range || range.collapsed) return;
                 lastDesignSelectionRange = { doc: doc, range: range.cloneRange(), text: sel.toString() };
             } catch (e) {
                 lastDesignSelectionRange = null;
@@ -8486,6 +8575,7 @@ if (isset($_GET['action'])) {
             const sizeSel = document.getElementById('propSize');
             const boldBtn = document.getElementById('propBold');
             const italicBtn = document.getElementById('propItalic');
+            const underlineBtn = document.getElementById('propUnderline');
             const colorInp = document.getElementById('propColor');
             const bgInp = document.getElementById('propBg');
             const classSel = document.getElementById('propClass');
@@ -8539,8 +8629,11 @@ if (isset($_GET['action'])) {
             }
             boldBtn.style.background = (computed.fontWeight === '700' || computed.fontWeight === 'bold') ? 'rgba(59,130,246,0.3)' : '';
             italicBtn.style.background = computed.fontStyle === 'italic' ? 'rgba(59,130,246,0.3)' : '';
+            if (underlineBtn) underlineBtn.style.background = ((computed.textDecorationLine || computed.textDecoration || '').indexOf('underline') !== -1) ? 'rgba(59,130,246,0.3)' : '';
             const quickItalicBtn = document.getElementById('btnQuickItalic');
             if (quickItalicBtn) quickItalicBtn.style.background = italicBtn.style.background;
+            const quickUnderlineBtn = document.getElementById('btnQuickUnderline');
+            if (quickUnderlineBtn && underlineBtn) quickUnderlineBtn.style.background = underlineBtn.style.background;
             colorInp.value = rgbToHex(computed.color) || '#000000';
             bgInp.value = rgbToHex(computed.backgroundColor) || '#ffffff';
             if (classSel) {
@@ -8700,9 +8793,14 @@ if (isset($_GET['action'])) {
         function getSelectedTextBlocks(doc, range) {
             if (!doc || !doc.body || !range) return [];
             var selector = 'p, div, h1, h2, h3, h4, h5, h6, li, td, th, blockquote';
-            return Array.from(doc.body.querySelectorAll(selector)).filter(function (block) {
+            var blocks = Array.from(doc.body.querySelectorAll(selector)).filter(function (block) {
                 if (!range.intersectsNode(block)) return false;
                 return rangeIntersectsNonEmptyText(doc, range, block);
+            });
+            return blocks.filter(function (block) {
+                return !blocks.some(function (other) {
+                    return other !== block && block.contains(other);
+                });
             });
         }
 
@@ -8739,7 +8837,91 @@ if (isset($_GET['action'])) {
             return !!(range && range.toString && range.toString().trim());
         }
 
+        function normalizeInlineSelectionText(value) {
+            return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+        }
+
+        function selectionCoversWholeBlockText(range, block) {
+            if (!range || !block) return false;
+            var selectedText = normalizeInlineSelectionText(range.toString());
+            var blockText = normalizeInlineSelectionText(block.textContent || '');
+            return !!blockText && selectedText === blockText;
+        }
+
+        function closestInlineFormattingBlock(node) {
+            var selector = 'p,div,h1,h2,h3,h4,h5,h6,li,td,th,blockquote';
+            var el = node && node.nodeType === Node.ELEMENT_NODE ? node : (node ? node.parentElement : null);
+            return el && el.closest ? el.closest(selector) : null;
+        }
+
+        function getCommonInlineFormattingBlock(range) {
+            if (!range) return null;
+            var startBlock = closestInlineFormattingBlock(range.startContainer);
+            var endBlock = closestInlineFormattingBlock(range.endContainer);
+            return startBlock && startBlock === endBlock ? startBlock : null;
+        }
+
+        function getWholeSelectionInlineFormattingBlock(doc, range) {
+            var commonBlock = getCommonInlineFormattingBlock(range);
+            if (commonBlock && selectionCoversWholeBlockText(range, commonBlock)) return commonBlock;
+
+            var selectedText = normalizeInlineSelectionText(range && range.toString ? range.toString() : '');
+            if (!selectedText || !doc || !doc.body) return null;
+            var selector = 'p,div,h1,h2,h3,h4,h5,h6,li,td,th,blockquote';
+            var matches = Array.from(doc.body.querySelectorAll(selector)).filter(function (block) {
+                return normalizeInlineSelectionText(block.textContent || '') === selectedText;
+            });
+            matches = matches.filter(function (block) {
+                return !matches.some(function (other) {
+                    return other !== block && block.contains(other);
+                });
+            });
+            return matches.length === 1 ? matches[0] : null;
+        }
+
+        function isEmptyTextParagraph(node) {
+            if (!node || node.nodeType !== 1 || node.tagName !== 'P') return false;
+            if (!node.classList ||
+                (!node.classList.contains('text_obisnuit') && !node.classList.contains('text_obisnuit2'))) {
+                return false;
+            }
+            var clone = node.cloneNode(true);
+            clone.querySelectorAll('br').forEach(function (br) { br.remove(); });
+            return !normalizeInlineSelectionText(clone.textContent || '');
+        }
+
+        function adjacentElementAcrossWhitespace(node, direction) {
+            var sibling = node ? node[direction] : null;
+            while (sibling && sibling.nodeType === Node.TEXT_NODE &&
+                !normalizeInlineSelectionText(sibling.nodeValue || '')) {
+                sibling = sibling[direction];
+            }
+            return sibling && sibling.nodeType === Node.ELEMENT_NODE ? sibling : null;
+        }
+
+        function removeAdjacentEmptyTextParagraphs(block) {
+            if (!block || !block.parentNode) return;
+            var sibling = adjacentElementAcrossWhitespace(block, 'previousSibling');
+            while (isEmptyTextParagraph(sibling)) {
+                var previous = adjacentElementAcrossWhitespace(sibling, 'previousSibling');
+                sibling.remove();
+                sibling = previous;
+            }
+            sibling = adjacentElementAcrossWhitespace(block, 'nextSibling');
+            while (isEmptyTextParagraph(sibling)) {
+                var next = adjacentElementAcrossWhitespace(sibling, 'nextSibling');
+                sibling.remove();
+                sibling = next;
+            }
+        }
+
         function selectedBlockTextNodesHaveFormat(doc, range, tagName) {
+            if (range && range.commonAncestorContainer &&
+                range.commonAncestorContainer.nodeType === Node.TEXT_NODE) {
+                var rootText = range.commonAncestorContainer.nodeValue || '';
+                if (!rootText.trim()) return false;
+                return !!closestInlineFormatElement(range.commonAncestorContainer.parentElement, tagName);
+            }
             var walker = doc.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT, {
                 acceptNode: function (node) {
                     if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
@@ -8753,18 +8935,76 @@ if (isset($_GET['action'])) {
             while ((node = walker.nextNode())) {
                 found = true;
                 var parent = node.parentElement;
-                if (!parent || !parent.closest || !parent.closest(tagName)) return false;
+                if (!closestInlineFormatElement(parent, tagName)) return false;
             }
             return found;
         }
 
+        function getInlineFormatTagName(kind) {
+            if (kind === 'bold') return 'strong';
+            if (kind === 'underline') return 'u';
+            return 'em';
+        }
+
+        function inlineFormatSelector(tagName) {
+            return tagName === 'em' ? 'em,i:not([class])' : tagName;
+        }
+
+        function closestInlineFormatElement(node, tagName) {
+            var selector = inlineFormatSelector(tagName);
+            var el = node && node.nodeType === 1 ? node : (node ? node.parentElement : null);
+            while (el && el.nodeType === 1 && el.tagName !== 'BODY') {
+                if (el.matches && el.matches(selector)) return el;
+                el = el.parentElement;
+            }
+            return null;
+        }
+
+        function queryInlineFormatElements(root, tagName) {
+            if (!root || !root.querySelectorAll) return [];
+            return Array.from(root.querySelectorAll(inlineFormatSelector(tagName)));
+        }
+
         function unwrapFormatInBlock(block, tagName) {
-            Array.from(block.querySelectorAll(tagName)).forEach(function (fmt) {
+            queryInlineFormatElements(block, tagName).forEach(function (fmt) {
                 var parent = fmt.parentNode;
                 while (fmt.firstChild) parent.insertBefore(fmt.firstChild, fmt);
                 parent.removeChild(fmt);
             });
             block.normalize();
+        }
+
+        function allBlockTextNodesHaveFormat(doc, block, tagName) {
+            var walker = doc.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+            var found = false;
+            var node;
+            while ((node = walker.nextNode())) {
+                if (!normalizeInlineSelectionText(node.nodeValue || '')) continue;
+                found = true;
+                var format = closestInlineFormatElement(node.parentElement, tagName);
+                if (!format || !block.contains(format)) return false;
+            }
+            return found;
+        }
+
+        function toggleWholeBlockInlineFormat(doc, sel, block, tagName) {
+            var removeFormat = allBlockTextNodesHaveFormat(doc, block, tagName);
+
+            // A full-paragraph command always starts from one clean representation.
+            // Thus a partial inner <u>/<em> cannot survive inside the new outer tag.
+            unwrapFormatInBlock(block, tagName);
+            if (!removeFormat) {
+                var wrapper = doc.createElement(tagName);
+                while (block.firstChild) wrapper.appendChild(block.firstChild);
+                block.appendChild(wrapper);
+            }
+
+            removeAdjacentEmptyTextParagraphs(block);
+            sel.removeAllRanges();
+            var newRange = doc.createRange();
+            newRange.selectNodeContents(block);
+            sel.addRange(newRange);
+            rememberDesignSelectionRange(doc.defaultView, doc);
         }
 
         function wrapRangeContentsWithTag(doc, range, tagName) {
@@ -8823,7 +9063,7 @@ if (isset($_GET['action'])) {
         function toggleInlineFormat(kind) {
             // Push the current body state BEFORE the change so undo can revert it
             designPushCurrentState();
-            const tagName = kind === 'bold' ? 'strong' : 'em';
+            const tagName = getInlineFormatTagName(kind);
             const info = getDesignSelectionRange();
             if (info && !info.range.collapsed) {
                 const { doc, sel, range } = info;
@@ -8832,12 +9072,62 @@ if (isset($_GET['action'])) {
                     lastDesignSnapshot = getDesignBodyHtml();
                     return;
                 }
+                const wholeSelectionBlock = getWholeSelectionInlineFormattingBlock(doc, range);
+                if (wholeSelectionBlock) {
+                    toggleWholeBlockInlineFormat(doc, sel, wholeSelectionBlock, tagName);
+                    syncFromDesign();
+                    lastDesignSnapshot = getDesignBodyHtml();
+                    return;
+                }
+                const selectedBlocks = getSelectedTextBlocks(doc, range);
+                if (selectedBlocks.length === 1) {
+                    const block = selectedBlocks[0];
+                    const blockRange = makeRangeInsideBlock(doc, range, block);
+                    if (rangeHasText(blockRange)) {
+                        if (selectionCoversWholeBlockText(blockRange, block)) {
+                            toggleWholeBlockInlineFormat(doc, sel, block, tagName);
+                            syncFromDesign();
+                            lastDesignSnapshot = getDesignBodyHtml();
+                            return;
+                        }
+                        const selectedTextInBlock = blockRange.toString();
+                        if (selectedBlockTextNodesHaveFormat(doc, blockRange, tagName)) {
+                            const fmt = closestInlineFormatElement(blockRange.startContainer, tagName);
+                            const endFmt = closestInlineFormatElement(blockRange.endContainer, tagName);
+                            if (fmt && fmt === endFmt && fmt !== block) {
+                                const parent = fmt.parentNode;
+                                while (fmt.firstChild) parent.insertBefore(fmt.firstChild, fmt);
+                                parent.removeChild(fmt);
+                                parent.normalize();
+                                if (selectedTextInBlock) {
+                                    const newRange = findTextRangeInNode(doc, parent, selectedTextInBlock);
+                                    if (newRange) { sel.removeAllRanges(); sel.addRange(newRange); }
+                                }
+                            } else {
+                                unwrapFormatInBlock(block, tagName);
+                                if (selectedTextInBlock) {
+                                    const newRange = findTextRangeInNode(doc, block, selectedTextInBlock);
+                                    if (newRange) { sel.removeAllRanges(); sel.addRange(newRange); }
+                                }
+                            }
+                        } else {
+                            const wrapper = wrapRangeContentsWithTag(doc, blockRange, tagName);
+                            sel.removeAllRanges();
+                            const newRange = doc.createRange();
+                            newRange.selectNodeContents(wrapper);
+                            sel.addRange(newRange);
+                        }
+                        syncFromDesign();
+                        lastDesignSnapshot = getDesignBodyHtml();
+                        return;
+                    }
+                }
                 // Save selected text for re-selection
                 const selectedText = range.toString();
                 let node = range.commonAncestorContainer;
                 if (node.nodeType === 3) node = node.parentElement;
-                let fmt = node && node.closest ? node.closest(tagName) : null;
-                if (fmt && fmt.tagName.toLowerCase() === tagName) {
+                let fmt = closestInlineFormatElement(node, tagName);
+                if (fmt) {
                     // Remove formatting: unwrap the tag but keep selection on original text
                     const parent = fmt.parentNode;
                     // Collect child nodes before unwrapping
@@ -8874,7 +9164,7 @@ if (isset($_GET['action'])) {
                 const el = getDesignSelection();
                 if (!el) return;
                 const doc = el.ownerDocument;
-                const existing = el.querySelector(tagName);
+                const existing = queryInlineFormatElements(el, tagName)[0];
                 if (existing) {
                     const parent = existing.parentNode;
                     while (existing.firstChild) parent.insertBefore(existing.firstChild, existing);
@@ -8886,7 +9176,6 @@ if (isset($_GET['action'])) {
                 }
             }
             syncFromDesign();
-            applyCodeToDesignPanel();
             // Record the post-change state so the next snapshot won't double-push
             lastDesignSnapshot = getDesignBodyHtml();
         }
@@ -9561,16 +9850,33 @@ if (isset($_GET['action'])) {
             document.getElementById('propFont').addEventListener('change', () => applyFontProperty('fontFamily', document.getElementById('propFont').value));
             document.getElementById('propClass').addEventListener('change', () => applyClassProperty(document.getElementById('propClass').value));
             document.getElementById('propSize').addEventListener('change', () => applyFontProperty('fontSize', document.getElementById('propSize').value));
+            document.getElementById('propBold').addEventListener('mousedown', e => e.preventDefault());
             document.getElementById('propBold').addEventListener('click', () => {
                 toggleInlineFormat('bold');
             });
+            document.getElementById('propItalic').addEventListener('mousedown', e => e.preventDefault());
             document.getElementById('propItalic').addEventListener('click', () => {
                 toggleInlineFormat('italic');
             });
+            const propUnderline = document.getElementById('propUnderline');
+            if (propUnderline) {
+                propUnderline.addEventListener('mousedown', e => e.preventDefault());
+                propUnderline.addEventListener('click', () => {
+                    toggleInlineFormat('underline');
+                });
+            }
             const quickItalicTop = document.getElementById('btnQuickItalic');
             if (quickItalicTop) {
+                quickItalicTop.addEventListener('mousedown', e => e.preventDefault());
                 quickItalicTop.addEventListener('click', () => {
                     toggleInlineFormat('italic');
+                });
+            }
+            const quickUnderlineTop = document.getElementById('btnQuickUnderline');
+            if (quickUnderlineTop) {
+                quickUnderlineTop.addEventListener('mousedown', e => e.preventDefault());
+                quickUnderlineTop.addEventListener('click', () => {
+                    toggleInlineFormat('underline');
                 });
             }
             // Shortcut în topbar: B lângă Redo → aplică clasa text_obisnuit2 pe selecția din Design
