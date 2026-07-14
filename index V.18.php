@@ -653,7 +653,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'preview') {
 
                 // DOMContentLoaded notification script (our only injected script)
                 $domReadyScript = '<script>document.addEventListener("DOMContentLoaded",function(){'
-                    . 'try{if(window.parent&&window.parent.__previewDOMReady)window.parent.__previewDOMReady();}catch(e){}'
+                    . 'try{if(window.parent&&window.parent.__previewDOMReady)window.parent.__previewDOMReady(window.location.href);}catch(e){}'
                     . '});</script>';
 
                 // Override CSS — force ALL elements to be visible.
@@ -6509,15 +6509,12 @@ if (isset($_GET['action'])) {
                         if (_newTail) tab.protectedBodyScriptTail = _newTail;
                         lastDesignSnapshot = getDesignBodyHtml();
                         tab.lastDesignSnapshot = lastDesignSnapshot;
-                        var hasDesignHistoryAtSave = (designUndoStack && designUndoStack.length > 0) ||
-                            (designRedoStack && designRedoStack.length > 0);
-                        if (!hasDesignHistoryAtSave) {
-                            tab.designCleanCode = contentToSave;
-                            designCleanCode = contentToSave;
-                            designCleanBodyHtml = lastDesignSnapshot;
-                        } else {
-                            tab.designCleanCode = designCleanCode;
-                        }
+                        // Save always establishes a new clean baseline. Keep the undo/redo
+                        // history, but compare future Design syncs with what was just saved,
+                        // not with the version that was clean before the edit.
+                        designCleanCode = contentToSave;
+                        designCleanBodyHtml = lastDesignSnapshot;
+                        tab.designCleanCode = designCleanCode;
                         tab.designCleanBodyHtml = designCleanBodyHtml;
                         tab.designUndoStack = designUndoStack.slice();
                         tab.designRedoStack = designRedoStack.slice();
@@ -8001,12 +7998,16 @@ if (isset($_GET['action'])) {
         // so makeDesignEditable runs as soon as the DOM is parsed — not after
         // all external CSS/fonts finish loading (which can take 30+ seconds).
         window.__previewDOMReady = null;
+        var _previewRequestSeq = 0;
 
         // When set, updatePreview will restore this scroll position after reload.
         var _pendingPreviewScroll = null;
 
         function updatePreview() {
             const iframe = document.getElementById('preview');
+            const previewRequestId = ++_previewRequestSeq;
+            const requestedFile = currentFile;
+            const requestedTabId = activeTabId;
 
             // Files with a known path on disk → use PHP preview.
             // PHP strips scripts/loaders, rebuilds clean HTML, and serves it
@@ -8014,10 +8015,19 @@ if (isset($_GET['action'])) {
             // (blob: URLs have issues with "preferred" stylesheets and encoded paths).
             if (currentFile) {
                 let done = false;
+                const previewToken = String(previewRequestId);
                 const scrollToRestore = _pendingPreviewScroll;
                 _pendingPreviewScroll = null;
-                const doEdit = () => {
-                    if (done) return;
+                const doEdit = (loadedUrl) => {
+                    if (done || previewRequestId !== _previewRequestSeq ||
+                        requestedTabId !== activeTabId || requestedFile !== currentFile) return;
+                    let actualUrl = (typeof loadedUrl === 'string') ? loadedUrl : '';
+                    if (!actualUrl) {
+                        try { actualUrl = iframe.contentWindow.location.href || ''; } catch (e) { actualUrl = ''; }
+                    }
+                    // A previous tab may finish DOMContentLoaded after this callback was
+                    // replaced. Ignore it unless the loaded document belongs to this request.
+                    if (actualUrl && actualUrl.indexOf('previewToken=' + previewToken) === -1) return;
                     done = true;
                     if (isCurrentFileHtml()) makeDesignEditable();
                     // Dacă un tab de browser este deschis, ne asigurăm că iframe-ul lui rămâne pe URL-ul curent din tab
@@ -8039,8 +8049,13 @@ if (isset($_GET['action'])) {
                     }
                 };
                 window.__previewDOMReady = doEdit;
-                iframe.onload = doEdit;
-                iframe.src = '?action=preview&file=' + encodeURIComponent(currentFile) + '&t=' + Date.now();
+                iframe.onload = function () {
+                    let loadedUrl = '';
+                    try { loadedUrl = iframe.contentWindow.location.href || ''; } catch (e) { loadedUrl = ''; }
+                    doEdit(loadedUrl);
+                };
+                iframe.src = '?action=preview&file=' + encodeURIComponent(currentFile) +
+                    '&t=' + Date.now() + '&previewToken=' + previewToken;
                 return;
             }
 
