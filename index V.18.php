@@ -237,6 +237,34 @@ function normalize_text_paragraph_inline_formatting_php($html)
     );
 }
 
+/**
+ * In zona articolului, muta inchiderile de paragraf ramase singure pe randul urmator
+ * la sfarsitul textului: "text\n</p>" -> "text</p>" si
+ * "text\n</em></p>" -> "text</em></p>".
+ */
+function join_sasa_paragraph_closing_tags_php($html)
+{
+    return preg_replace_callback(
+        '/(<!--\s*SASA-1\s*-->)([\s\S]*?)(<!--\s*SASA-2\s*-->)/i',
+        function ($zone) {
+            $body = preg_replace_callback(
+                '/(<p\b[^>]*\bclass\s*=\s*["\'][^"\']*\btext_obisnuit2?\b[^"\']*["\'][^>]*>)([\s\S]*?)(<\/p>)/i',
+                function ($paragraph) {
+                    $inner = preg_replace(
+                        '/[\t ]*(?:\r?\n[\t ]*)+(?=(?:<\/(?:em|i|strong|b|u)>[\t ]*)*$)/i',
+                        '',
+                        $paragraph[2]
+                    );
+                    return $paragraph[1] . $inner . $paragraph[3];
+                },
+                $zone[2]
+            );
+            return $zone[1] . $body . $zone[3];
+        },
+        (string) $html
+    );
+}
+
 function plain_text_from_html_inner($inner)
 {
     $x = preg_replace('/<br\s*\/?>/i', ' ', (string) $inner);
@@ -880,6 +908,7 @@ if (isset($_GET['action'])) {
             $beforeMeta = $content;
             $content = remove_orphan_closing_spans_from_paragraphs_php($content);
             $content = normalize_text_paragraph_inline_formatting_php($content);
+            $content = join_sasa_paragraph_closing_tags_php($content);
             $content = align_saved_html_charset_declaration_utf8($content);
             $content = apply_sasa_teaser_to_meta_description_php($content);
             $content = apply_h1_to_page_titles_php($content);
@@ -6452,6 +6481,9 @@ if (isset($_GET['action'])) {
                 if (isCurrentFileHtml() && typeof normalizeTextParagraphInlineFormatting === 'function') {
                     contentToSave = normalizeTextParagraphInlineFormatting(contentToSave);
                 }
+                if (isCurrentFileHtml() && typeof joinSasaParagraphClosingTags === 'function') {
+                    contentToSave = joinSasaParagraphClosingTags(contentToSave);
+                }
                 if (isCurrentFileHtml() && typeof applySasaTeaserToMetaDescription === 'function') {
                     contentToSave = applySasaTeaserToMetaDescription(contentToSave);
                 }
@@ -6795,6 +6827,25 @@ if (isset($_GET['action'])) {
             return out.replace(
                 /^[\t ]*<p\b[^>]*\bclass\s*=\s*["'][^"']*\btext_obisnuit2?\b[^"']*["'][^>]*>\s*(?:<(?:em|i|strong|b|u)\b[^>]*>\s*<\/(?:em|i|strong|b|u)>\s*)+<\/p>\s*\r?\n?/gmi,
                 ''
+            );
+        }
+
+        function joinSasaParagraphClosingTags(html) {
+            return String(html || '').replace(
+                /(<!--\s*SASA-1\s*-->)([\s\S]*?)(<!--\s*SASA-2\s*-->)/gi,
+                function (_zoneMatch, marker1, zoneBody, marker2) {
+                    zoneBody = zoneBody.replace(
+                        /(<p\b[^>]*\bclass\s*=\s*["'][^"']*\btext_obisnuit2?\b[^"']*["'][^>]*>)([\s\S]*?)(<\/p>)/gi,
+                        function (_pMatch, pOpen, inner, pClose) {
+                            inner = inner.replace(
+                                /[\t ]*(?:\r?\n[\t ]*)+(?=(?:<\/(?:em|i|strong|b|u)>[\t ]*)*$)/i,
+                                ''
+                            );
+                            return pOpen + inner + pClose;
+                        }
+                    );
+                    return marker1 + zoneBody + marker2;
+                }
             );
         }
 
